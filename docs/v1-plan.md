@@ -278,8 +278,9 @@ agent.
 -   [x] Full I/O surface on the driver: `Start`, `Write`, `Read`,
     `ReadTimeout`, `Resize`, `Wait`, `Stop`.
 -   [x] `ReadTimeout` — a read that returns when the process has been
-    quiet for a deadline (`select(2)` on the fd), so a REPL `read`
-    never blocks forever on an idle agent.
+    quiet for a deadline. It watches the fd with `poll(2)` (fd-number
+    based, so no `select(2)` 1024-fd ceiling), so a REPL `read` never
+    blocks forever on an idle agent.
 -   [x] Manager plumbing: `Write`, `Read`, `Resize`, `ReadTimeout`
     on agents.
 -   [x] REPL commands: `send <id> <text>`, `read <id>`,
@@ -287,12 +288,19 @@ agent.
 -   [x] Acceptance ride passes end to end: `start sh` → `echo hello`
     → read `hello` / prompt → resize → `exit` → clean stop, no
     stray processes.
--   [x] Concurrent I/O is safe: a mutex on `Handle` serializes
-    `Read`/`Write`/`Resize` against `Wait`'s fd teardown (race-tested).
+-   [x] Concurrent I/O is safe and full-duplex: separate `read`/`write`
+    locks on `Handle` (a single lock deadlocked a blocked read against
+    a concurrent write), with a `stateMu` guarding fd teardown in
+    `Wait` (race-tested).
+-   [x] `Stop` terminates the whole terminal session: every process
+    group still in the PTY session receives `SIGTERM`, then `SIGKILL`
+    after a grace period, and `Stop` waits until the session is empty —
+    job-control children do not survive a stopped shell
+    (regression-tested against a `SIGTERM`-ignoring child).
 -   [x] **Dependency decision:** Pony now depends on
-    `github.com/creack/pty` (MIT) instead of hand-rolling `/dev/ptmx`
-    ioctls. This is the first non-stdlib dependency and a deliberate
-    platform (Linux) choice.
+    `github.com/creack/pty` (MIT) and `golang.org/x/sys` (BSD) instead
+    of hand-rolling `/dev/ptmx` ioctls. These are the first
+    non-stdlib dependencies and a deliberate platform (Linux) choice.
 
 ``` text
 pony> start shell sh
