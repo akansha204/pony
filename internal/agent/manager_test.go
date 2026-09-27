@@ -756,13 +756,15 @@ func TestStartRejectsEmptyFields(t *testing.T) {
 	}
 }
 
-// containsTerminalLine reports whether output contains want as a whole line.
-// A PTY echoes the typed command, so substring matches can false-positive
-// before the command runs; a matching standalone line cannot.
+// containsTerminalLine reports whether output contains want as a whole line
+// or the end of a line. A PTY echoes the typed command, so substring matches
+// can false-positive; shells also print their prompt before the result
+// (`$ 42`), so the match must allow a prompt prefix.
 func containsTerminalLine(output, want string) bool {
 	normalized := strings.ReplaceAll(output, "\r\n", "\n")
 	for _, line := range strings.Split(normalized, "\n") {
-		if strings.TrimSpace(line) == want {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == want || strings.HasSuffix(trimmed, want) {
 			return true
 		}
 	}
