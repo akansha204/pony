@@ -135,23 +135,80 @@ func (d *PTYDriver) Stop(ctx context.Context, h *Handle) error {
 		return fmt.Errorf("signal PTY session %d: %w", h.PID, err)
 	}
 
+	empty, err := waitSessionEmpty(
+		ctx.Done(),
+		h.PID,
+		grace,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"wait for PTY session %d after SIGTERM: %w",
+			h.PID,
+			err,
+		)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if !empty {
+		if err := signalSessionProcessGroups(
+			h.PID,
+			syscall.SIGKILL,
+		); err != nil {
+			return fmt.Errorf(
+				"kill PTY session %d: %w",
+				h.PID,
+				err,
+			)
+		}
+
+		empty, err = waitSessionEmpty(
+			ctx.Done(),
+			h.PID,
+			killTimeout,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"wait for PTY session %d after SIGKILL: %w",
+				h.PID,
+				err,
+			)
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if !empty {
+			pgids, scanErr := sessionProcessGroups(h.PID)
+			if scanErr != nil {
+				return fmt.Errorf(
+					"PTY session %d did not terminate after SIGKILL",
+					h.PID,
+				)
+			}
+
+			return fmt.Errorf(
+				"PTY session %d still has live process groups after SIGKILL: %v",
+				h.PID,
+				pgids,
+			)
+		}
+	}
+
 	select {
 	case <-h.done:
 		return nil
-	case <-time.After(grace):
-	case <-ctx.Done():
-	}
 
-	if err := signalSessionProcessGroups(h.PID, syscall.SIGKILL); err != nil {
-		return fmt.Errorf("kill PTY session %d: %w", h.PID, err)
-	}
-
-	select {
-	case <-h.done:
-		return nil
-	case <-time.After(killTimeout):
-		return fmt.Errorf("PTY session %d did not terminate after SIGKILL", h.PID)
 	case <-ctx.Done():
 		return ctx.Err()
+
+	case <-time.After(killTimeout):
+		return fmt.Errorf(
+			"PTY session %d is empty but its leader was not reaped",
+			h.PID,
+		)
 	}
 }
