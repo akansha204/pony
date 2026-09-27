@@ -871,3 +871,56 @@ func TestManagerCopiesAgentSpec(t *testing.T) {
 		t.Fatalf("stored Env mutated through caller slice: %q", got)
 	}
 }
+
+func TestSessionIdentityIsIndependentOfAgentID(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+
+	spec := AgentSpec{
+		ID:      "identity",
+		Command: "sleep",
+		Args:    []string{"1000"},
+	}
+
+	s1, err := m.Start(spec)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	if s1.SessionID == "" {
+		t.Fatal("SessionID must not be empty")
+	}
+
+	if s1.SessionID == SessionID(s1.AgentID) {
+		t.Fatalf(
+			"SessionID %q is just AgentID %q",
+			s1.SessionID,
+			s1.AgentID,
+		)
+	}
+
+	if err := m.Restart(spec.ID); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	s2, ok := m.Get(spec.ID)
+	if !ok {
+		t.Fatal("agent disappeared after Restart")
+	}
+
+	if s2.SessionID != s1.SessionID {
+		t.Fatalf(
+			"Restart changed session identity: %q -> %q",
+			s1.SessionID,
+			s2.SessionID,
+		)
+	}
+
+	if s2.Generation != s1.Generation+1 {
+		t.Fatalf(
+			"generation = %d, want %d",
+			s2.Generation,
+			s1.Generation+1,
+		)
+	}
+}
