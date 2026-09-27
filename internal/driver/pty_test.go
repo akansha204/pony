@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -501,5 +502,103 @@ func TestPTYReadDoesNotBlockConcurrentWrite(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("full-duplex PTY interaction deadlocked")
+	}
+}
+
+func testProcessAlive(pid int) bool {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+
+	stat := string(raw)
+	closeParen := strings.LastIndex(stat, ")")
+	if closeParen < 0 {
+		return false
+	}
+
+	fields := strings.Fields(stat[closeParen+1:])
+	if len(fields) == 0 {
+		return false
+	}
+
+	return fields[0] != "Z"
+}
+
+func TestPTYStopKillsJobControlChild(t *testing.T) {
+	d := NewPTYDriver()
+
+	h, err := d.Start(
+		context.Background(),
+		Spec{
+			Path: "bash",
+			Args: []string{"--noprofile", "--norc", "-i"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := make(chan ExitResult, 1)
+	go func() {
+		done <- d.Wait(h)
+	}()
+
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	cmd := fmt.Sprintf("sleep 1000 & echo $! > %q\n", pidFile)
+
+	if _, err := d.Write(h, []byte(cmd)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var childPID int
+
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(pidFile)
+		if err == nil {
+			childPID, err = strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err == nil {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if childPID == 0 {
+		t.Fatal("background child PID was not produced")
+	}
+	if !testProcessAlive(childPID) {
+		t.Fatalf("background child %d is not alive before Stop", childPID)
+	}
+
+	childPGID, err := syscall.Getpgid(childPID)
+	if err != nil {
+		t.Fatalf("Getpgid child: %v", err)
+	}
+	if childPGID == h.PID {
+		t.Logf(
+			"background job stayed in shell PGID %d; cleanup is still tested",
+			childPGID,
+		)
+	}
+
+	if err := d.Stop(context.Background(), h); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PTY leader was not reaped")
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for testProcessAlive(childPID) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if testProcessAlive(childPID) {
+		t.Fatalf("background child %d survived PTY Stop", childPID)
 	}
 }
