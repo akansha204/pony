@@ -756,6 +756,9 @@ func TestStartRejectsEmptyFields(t *testing.T) {
 	}
 }
 
+// containsTerminalLine reports whether output contains want as a whole line.
+// A PTY echoes the typed command, so substring matches can false-positive
+// before the command runs; a matching standalone line cannot.
 func containsTerminalLine(output, want string) bool {
 	normalized := strings.ReplaceAll(output, "\r\n", "\n")
 	for _, line := range strings.Split(normalized, "\n") {
@@ -783,14 +786,16 @@ func TestPTYAgentInteracts(t *testing.T) {
 	buf := make([]byte, 256)
 	deadline := time.Now().Add(5 * time.Second)
 	for !containsTerminalLine(got.String(), "42") && time.Now().Before(deadline) {
-		n, err := m.Read(spec.ID, buf)
+		n, err := m.ReadTimeout(spec.ID, buf, 250*time.Millisecond)
 		if err != nil {
-			break
+			t.Fatalf("ReadTimeout: %v", err)
 		}
-		got.Write(buf[:n])
+		if n > 0 {
+			got.Write(buf[:n])
+		}
 	}
 	if !containsTerminalLine(got.String(), "42") {
-		t.Fatalf("agent output %q has no standalone 42 line", got.String())
+		t.Fatalf("agent output %q does not contain execution result line 42", got.String())
 	}
 
 	if err := m.Resize(spec.ID, 30, 90); err != nil {
