@@ -146,6 +146,16 @@ func TestStartAppliesCwdAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read environ: %v", err)
 	}
+	// /proc/<pid>/environ can read momentarily empty between Start's fork and
+	// the child's exec, so poll until the override appears.
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(string(data), "PONY_VAL=1") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		data, err = os.ReadFile(fmt.Sprintf("/proc/%d/environ", h.PID))
+		if err != nil {
+			t.Fatalf("read environ: %v", err)
+		}
+	}
 	if !strings.Contains(string(data), "PONY_VAL=1") {
 		t.Fatal("PONY_VAL=1 not present in the process environment")
 	}
