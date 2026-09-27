@@ -437,3 +437,69 @@ func TestStopEscalatesWhenJobControlChildIgnoresSIGTERM(t *testing.T) {
 		t.Fatal("PTY leader was not reaped")
 	}
 }
+
+func TestPTYReadDoesNotBlockConcurrentWrite(t *testing.T) {
+	d := NewPTYDriver()
+
+	h, err := d.Start(context.Background(), Spec{Path: "sh"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	done := make(chan ExitResult, 1)
+	go func() {
+		done <- d.Wait(h)
+	}()
+
+	t.Cleanup(func() {
+		_ = d.Stop(context.Background(), h)
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("PTY process was not reaped during cleanup")
+		}
+	})
+
+	readDone := make(chan string, 1)
+
+	go func() {
+		var got strings.Builder
+		buf := make([]byte, 256)
+		deadline := time.Now().Add(5 * time.Second)
+
+		for time.Now().Before(deadline) {
+			n, err := d.ReadTimeout(h, buf, 250*time.Millisecond)
+			if n > 0 {
+				got.Write(buf[:n])
+			}
+
+			if containsTerminalLine(got.String(), "42") {
+				readDone <- got.String()
+				return
+			}
+
+			if err != nil {
+				readDone <- got.String()
+				return
+			}
+		}
+
+		readDone <- got.String()
+	}()
+
+	if _, err := d.Write(
+		h,
+		[]byte("printf '%s\\n' \"$((6*7))\"\n"),
+	); err != nil {
+		t.Fatalf("Write while reader active: %v", err)
+	}
+
+	select {
+	case output := <-readDone:
+		if !containsTerminalLine(output, "42") {
+			t.Fatalf("output %q does not contain line 42", output)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("full-duplex PTY interaction deadlocked")
+	}
+}
