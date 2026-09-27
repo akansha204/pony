@@ -238,6 +238,16 @@ func TestReadTimeoutDrainsThenGoesQuiet(t *testing.T) {
 	}
 }
 
+func containsTerminalLine(output, want string) bool {
+	normalized := strings.ReplaceAll(output, "\r\n", "\n")
+	for _, line := range strings.Split(normalized, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPTYDriverInteractiveShell(t *testing.T) {
 	d := NewPTYDriver()
 	h, err := d.Start(context.Background(), Spec{Path: "sh"})
@@ -260,7 +270,7 @@ func TestPTYDriverInteractiveShell(t *testing.T) {
 			n, err := d.Read(h, buf)
 			if n > 0 {
 				got.Write(buf[:n])
-				if strings.Contains(got.String(), "hello") {
+				if containsTerminalLine(got.String(), "42") {
 					output <- got.String()
 					return
 				}
@@ -271,17 +281,17 @@ func TestPTYDriverInteractiveShell(t *testing.T) {
 		}
 	}()
 
-	if _, err := d.Write(h, []byte("echo hello\n")); err != nil {
+	if _, err := d.Write(h, []byte("printf '%s\\n' \"$((6*7))\"\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	select {
 	case got := <-output:
-		if !strings.Contains(got, "hello") {
-			t.Fatalf("terminal output %q does not contain hello", got)
+		if !containsTerminalLine(got, "42") {
+			t.Fatalf("terminal output %q has no standalone 42 line", got)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the shell to echo output")
+		t.Fatal("timed out waiting for the shell to compute 6*7")
 	}
 
 	if err := d.Resize(h, 30, 90); err != nil {

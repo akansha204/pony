@@ -756,6 +756,16 @@ func TestStartRejectsEmptyFields(t *testing.T) {
 	}
 }
 
+func containsTerminalLine(output, want string) bool {
+	normalized := strings.ReplaceAll(output, "\r\n", "\n")
+	for _, line := range strings.Split(normalized, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPTYAgentInteracts(t *testing.T) {
 	m := NewManager(driver.NewPTYDriver())
 	spec := AgentSpec{ID: "shell", Command: "sh"}
@@ -765,22 +775,22 @@ func TestPTYAgentInteracts(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if _, err := m.Write(spec.ID, []byte("echo hello\n")); err != nil {
+	if _, err := m.Write(spec.ID, []byte("printf '%s\\n' \"$((6*7))\"\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
 	var got strings.Builder
 	buf := make([]byte, 256)
 	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(got.String(), "hello") && time.Now().Before(deadline) {
+	for !containsTerminalLine(got.String(), "42") && time.Now().Before(deadline) {
 		n, err := m.Read(spec.ID, buf)
 		if err != nil {
 			break
 		}
 		got.Write(buf[:n])
 	}
-	if !strings.Contains(got.String(), "hello") {
-		t.Fatalf("agent output %q does not contain hello", got.String())
+	if !containsTerminalLine(got.String(), "42") {
+		t.Fatalf("agent output %q has no standalone 42 line", got.String())
 	}
 
 	if err := m.Resize(spec.ID, 30, 90); err != nil {
