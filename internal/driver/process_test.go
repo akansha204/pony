@@ -119,7 +119,7 @@ func TestStartAppliesCwdAndEnv(t *testing.T) {
 		Path: "sleep",
 		Args: []string{"1000"},
 		Cwd:  dir,
-		Env:  []string{"PATH=" + os.Getenv("PATH"), "PONY_VAL=1"},
+		Env:  []string{"PONY_VAL=1"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -148,6 +148,10 @@ func TestStartAppliesCwdAndEnv(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "PONY_VAL=1") {
 		t.Fatal("PONY_VAL=1 not present in the process environment")
+	}
+
+	if path := os.Getenv("PATH"); path != "" && !strings.Contains(string(data), "PATH=") {
+		t.Fatal("PATH was not inherited")
 	}
 }
 
