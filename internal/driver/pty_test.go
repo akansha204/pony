@@ -303,3 +303,127 @@ func TestPTYDriverInteractiveShell(t *testing.T) {
 		t.Fatalf("expected a clean exit, got: %v", res.Err)
 	}
 }
+
+func TestStopEscalatesWhenJobControlChildIgnoresSIGTERM(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+
+	d := NewPTYDriver()
+	d.Grace = 150 * time.Millisecond
+
+	h, err := d.Start(
+		context.Background(),
+		Spec{
+			Path: bash,
+			Args: []string{
+				"--noprofile",
+				"--norc",
+				"-i",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitDone := make(chan ExitResult, 1)
+	go func() {
+		waitDone <- d.Wait(h)
+	}()
+
+	pidFile := fmt.Sprintf(
+		"%s/stubborn.pid",
+		t.TempDir(),
+	)
+
+	// Background job:
+	// - stays inside the PTY session
+	// - receives its own job-control process group
+	// - deliberately ignores SIGTERM
+	cmd := fmt.Sprintf(
+		"bash -c 'trap \"\" TERM; exec sleep 1000' & echo $! > %q\n",
+		pidFile,
+	)
+
+	if _, err := d.Write(h, []byte(cmd)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	var childPID int
+	deadline := time.Now().Add(5 * time.Second)
+
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(pidFile)
+		if err == nil {
+			childPID, err = strconv.Atoi(
+				strings.TrimSpace(string(raw)),
+			)
+			if err == nil {
+				break
+			}
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if childPID == 0 {
+		t.Fatal("TERM-ignoring child PID was not produced")
+	}
+
+	if !processAlive(childPID) {
+		t.Fatalf("child %d is not alive before Stop", childPID)
+	}
+
+	sid, pgid, err := procSessionGroup(childPID)
+	if err != nil {
+		t.Fatalf("procSessionGroup: %v", err)
+	}
+
+	if sid != h.PID {
+		t.Fatalf(
+			"child session = %d, want %d",
+			sid,
+			h.PID,
+		)
+	}
+
+	if pgid == h.PID {
+		t.Skip(
+			"shell did not place background job in a separate process group",
+		)
+	}
+
+	started := time.Now()
+
+	if err := d.Stop(context.Background(), h); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	elapsed := time.Since(started)
+
+	// Since the child ignored TERM, the grace period must have elapsed
+	// before SIGKILL could terminate it.
+	if elapsed < d.Grace {
+		t.Fatalf(
+			"Stop returned in %v before grace period %v; "+
+				"likely returned when only the session leader died",
+			elapsed,
+			d.Grace,
+		)
+	}
+
+	if processAlive(childPID) {
+		t.Fatalf(
+			"TERM-ignoring job-control child %d survived Stop",
+			childPID,
+		)
+	}
+
+	select {
+	case <-waitDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PTY leader was not reaped")
+	}
+}
