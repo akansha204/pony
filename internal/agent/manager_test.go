@@ -837,3 +837,37 @@ func TestStartForwardsCwdToDriver(t *testing.T) {
 		t.Fatalf("cwd = %q, want %q", got, dir)
 	}
 }
+
+func TestManagerCopiesAgentSpec(t *testing.T) {
+	m := NewManager(driver.NewProcessDriver())
+
+	args := []string{"1000"}
+	env := []string{"PONY_COPY_TEST=original"}
+
+	spec := AgentSpec{
+		ID:      "copy-spec",
+		Command: "sleep",
+		Args:    args,
+		Env:     env,
+	}
+
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+
+	args[0] = "0"
+	env[0] = "PONY_COPY_TEST=mutated"
+
+	m.mu.Lock()
+	stored := cloneSpec(m.agents[spec.ID].spec)
+	m.mu.Unlock()
+
+	if got := stored.Args[0]; got != "1000" {
+		t.Fatalf("stored Args mutated through caller slice: %q", got)
+	}
+
+	if got := stored.Env[0]; got != "PONY_COPY_TEST=original" {
+		t.Fatalf("stored Env mutated through caller slice: %q", got)
+	}
+}
