@@ -324,17 +324,43 @@ pony>
 
 Make the runtime actually usable from the terminal.
 
+### The constraint this phase actually hits
+
+Everything starts from main and ends from main. `main` builds the
+`Manager` in-process and in-memory (`cmd/pony/main.go:20`), and a
+`defer` stops every agent on exit (`cmd/pony/main.go:22-28`). There is
+no daemon, and Phase 6 does not add one.
+
+Herdr runs a background server with many attached clients, so its
+"attach" survives the terminal closing and works from another shell.
+That is the `daemon/client split` and `persistent sessions` work this
+document lists as After-V1.
+
+For Pony as it stands, attach means: **hand the current terminal over
+to one running agent, and take it back without stopping that agent.**
+Both the runtime and the terminal are in one process, so there is no
+process migration and nothing to reconnect to.
+
+The idea worth taking from herdr is that the PTY output is owned by
+the runtime at all times and a viewer subscribes to it. In a
+single-process Pony, the viewer is just a foreground loop in `main`
+while the manager and its reader keep running.
+
+### Learn
+
+-   termios: `TCGETS`/`TCSETS`, and why `ICANON`, `ECHO`, `ISIG` must
+    be cleared for a bridge to work
+-   Raw mode: `VMIN`/`VTIME`, and the cost of never restoring it
+-   PTY line discipline: Ctrl+C is only a signal because the child's
+    own terminal has `ISIG` set
+-   `SIGWINCH` on the local terminal, and the `TIOCSWINSZ` that raises
+    `SIGWINCH` in the child
+-   Blocking reads: how to unblock a goroutine parked in `read(2)`
+    without closing the fd out from under it
+-   Bounded buffering: a small ring between one reader and at most one
+    foreground viewer
+
 ### Build
-
-Add:
-
-``` bash
-pony attach <session>
-```
-
-The user's terminal should connect to the session's PTY.
-
-Support:
 
 -   [ ] input forwarding
 -   [ ] output forwarding
@@ -343,9 +369,66 @@ Support:
 -   [ ] Ctrl+D behavior
 -   [ ] clean detach without killing the agent
 
+Concretely:
+
+-   [ ] `internal/term` — `GetState`, `MakeRaw`, `Restore`, `Size`.
+        The original termios is restored on every exit path: normal
+        return, panic, SIGINT, SIGTERM, SIGHUP, and attach failure.
+        Restore is idempotent. A killed Pony must never leave the user
+        with an unusable shell.
+-   [ ] One always-on reader per running session, started with the
+        session and owned by its lifecycle, feeding a small bounded
+        ring buffer. Exactly one reader on the master at any time,
+        bounded memory no matter how chatty the agent is or how long
+        nobody is watching, and no client ever closes the fd --
+        teardown belongs to `Wait` alone.
+-   [ ] `pony attach <id>` — enter raw mode, subscribe to that
+        session's output, forward local stdin to its PTY and its PTY
+        to local stdout, byte transparent. Apply the real terminal
+        size before the first byte is forwarded.
+-   [ ] Resize — catch `SIGWINCH` while attached and push the new size
+        to the agent, so a full-screen agent reflows when the window is
+        dragged.
+-   [ ] Keys — forward Ctrl+C as `0x03` and Ctrl+D as `0x04` so the
+        agent's own terminal decides what they mean. Pony interprets
+        neither, so neither kills Pony. Detach gets its own key
+        (Ctrl+\\) that cannot collide with agent keybindings.
+-   [ ] Clean detach — restore termios, unsubscribe, return to the
+        prompt. It must not go through `Manager.Stop`. The session is
+        left with the same generation, the same PID, and still
+        `StateRunning`.
+-   [ ] REPL coexistence — while attached, input is read from stdin as
+        a raw byte stream rather than through the REPL's buffered
+        scanner, which would otherwise swallow keystrokes meant for the
+        agent. `quit` still exits and still stops every agent.
+
+### Multiple agents
+
+Unchanged by any of this. Each session gets its own PTY, its own
+driver handle, and its own reader and buffer, and `attach` binds the
+terminal to exactly one of them at a time. Two agents can run at once
+and be attached one after the other, and the detached ones keep
+running and keep buffering. Phase 1 already guarantees the
+independence; Phase 6 only adds a viewer.
+
 ### Done when
 
-You can:
+``` text
+pony> start shell sh
+pony> start helper sh
+pony> attach shell
+$ echo hello
+hello
+$ Ctrl+\                       # detach, back to the prompt
+pony> attach helper             # the other agent, same terminal
+$ Ctrl+\ 
+pony> status                    # both still running, untouched
+```
+
+One agent is attached, both keep running, and the terminal is handed
+back and forth between them.
+
+The general case, which is what the phase is really for:
 
 ``` text
 start agent
@@ -359,10 +442,24 @@ attach again
 continue interacting
 ```
 
-If detach/reattach becomes too large for the current scope, explicitly
-defer detach and finish reliable interactive execution first.
+The same terminal is handed between agents, one at a time, and the
+detached ones keep running and keep buffering.
 
-------------------------------------------------------------------------
+### Tests
+
+-   [ ] Term state: `Get`/`MakeRaw`/`Restore` idempotent; restored on
+        panic and on a fatal signal.
+-   [ ] One reader on the master per session, and buffers stay
+        independent between agents.
+-   [ ] Output survives detach and is visible on re-attach.
+-   [ ] The buffer stays bounded under a flood.
+-   [ ] Input and output are byte transparent.
+-   [ ] Ctrl+C and Ctrl+D reach the child; neither kills Pony.
+-   [ ] Detach leaves the session running, same generation and PID.
+-   [ ] Resize is applied before the first forward and reaches the
+        child.
+-   [ ] A second agent is unaffected while the first one is attached.
+-   [ ] `go test -race ./...` and CI stay green.
 
 # Phase 7 — Workspace Isolation
 
