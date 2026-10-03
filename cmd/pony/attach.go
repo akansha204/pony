@@ -29,44 +29,57 @@ func (e *attachSignalError) Error() string {
 }
 
 func attach(mgr *agent.Manager, id agent.AgentID) error {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGWINCH, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	defer signal.Stop(sig)
+
+	return attachWithIO(mgr, id, os.Stdin, os.Stdout, sig)
+}
+
+func attachWithIO(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-chan os.Signal) error {
 	if running(mgr, id) != agent.StateRunning {
 		return fmt.Errorf("agent %q has no running session", id)
 	}
+	return withRawTerminal(in, func() error {
+		return bridgeTerminal(mgr, id, in, out, sig)
+	})
+}
 
-	in, out := os.Stdin, os.Stdout
+func withRawTerminal(in *os.File, run func() error) error {
 	prior, err := terminal.MakeRaw(in.Fd())
 	if err != nil {
 		return err
 	}
 	defer func() { _ = terminal.Restore(in.Fd(), prior) }()
+	return run()
+}
 
+func bridgeTerminal(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-chan os.Signal) error {
 	resizeTo(in, mgr, id)
 	term := newTermOut(out)
 	done := make(chan struct{})
 	copied := make(chan struct{})
 	fatal := make(chan os.Signal, 1)
 
-	go watchSignals(in, mgr, id, done, fatal)
+	go watchSignals(in, mgr, id, done, fatal, sig)
 	go func() {
 		defer close(copied)
 		copyOutput(mgr, id, term, done)
 	}()
 
-	err = readUntilDetach(mgr, id, in, term, fatal)
+	err := readUntilDetach(mgr, id, in, fatal)
 	close(done)
 	<-copied
-	term.endLine()
 	return err
 }
 
 type termOut struct {
-	mu   sync.Mutex
-	f    *os.File
-	last byte
+	mu sync.Mutex
+	f  *os.File
 }
 
 func newTermOut(f *os.File) *termOut {
-	return &termOut{f: f, last: '\n'}
+	return &termOut{f: f}
 }
 
 func (t *termOut) write(p []byte) error {
@@ -80,18 +93,7 @@ func (t *termOut) write(p []byte) error {
 	if _, err := t.f.Write(p); err != nil {
 		return err
 	}
-	t.last = p[len(p)-1]
 	return nil
-}
-
-func (t *termOut) endLine() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.last != '\n' {
-		_, _ = t.f.Write([]byte("\r\n"))
-		t.last = '\n'
-	}
 }
 
 func resizeTo(in *os.File, mgr *agent.Manager, id agent.AgentID) {
@@ -101,11 +103,7 @@ func resizeTo(in *os.File, mgr *agent.Manager, id agent.AgentID) {
 	}
 }
 
-func watchSignals(in *os.File, mgr *agent.Manager, id agent.AgentID, done <-chan struct{}, fatal chan<- os.Signal) {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGWINCH, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
-	defer signal.Stop(sig)
-
+func watchSignals(in *os.File, mgr *agent.Manager, id agent.AgentID, done <-chan struct{}, fatal chan<- os.Signal, sig <-chan os.Signal) {
 	for {
 		select {
 		case <-done:
@@ -124,11 +122,15 @@ func watchSignals(in *os.File, mgr *agent.Manager, id agent.AgentID, done <-chan
 	}
 }
 
-func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, out *termOut, fatal <-chan os.Signal) error {
+func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-chan os.Signal) error {
+	flags, err := unix.FcntlInt(in.Fd(), unix.F_GETFL, 0)
+	if err != nil {
+		return err
+	}
 	if err := unix.SetNonblock(int(in.Fd()), true); err != nil {
 		return err
 	}
-	defer func() { _ = unix.SetNonblock(int(in.Fd()), false) }()
+	defer func() { _ = unix.SetNonblock(int(in.Fd()), flags&unix.O_NONBLOCK != 0) }()
 
 	// Keep input after Ctrl+\ available to the REPL.
 	var buf [1]byte
@@ -140,16 +142,19 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, out *ter
 		}
 
 		if running(mgr, id) != agent.StateRunning {
-			out.endLine()
 			return nil
 		}
 
 		poll := []unix.PollFd{{Fd: int32(in.Fd()), Events: unix.POLLIN}}
-		if _, err := unix.Poll(poll, int(attachPollTimeout/time.Millisecond)); err != nil {
+		ready, err := unix.Poll(poll, int(attachPollTimeout/time.Millisecond))
+		if err != nil {
 			if errors.Is(err, unix.EINTR) {
 				continue
 			}
 			return err
+		}
+		if ready == 0 {
+			continue
 		}
 
 		n, err := in.Read(buf[:])
@@ -163,7 +168,6 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, out *ter
 		}
 
 		if buf[0] == detachKey {
-			out.endLine()
 			return nil
 		}
 		if _, err := mgr.Write(id, buf[:n]); err != nil {
@@ -201,8 +205,6 @@ func copyOutput(mgr *agent.Manager, id agent.AgentID, out *termOut, done <-chan 
 			return
 		}
 		if err != nil {
-			out.endLine()
-			fmt.Fprintln(out.f, "attach:", err)
 			return
 		}
 	}
