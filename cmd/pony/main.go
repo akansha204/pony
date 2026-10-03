@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/akansha204/pony/internal/agent"
@@ -27,14 +25,21 @@ func main() {
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	lines := newLineReader(os.Stdin)
 	for {
 		fmt.Print("pony> ")
-		if !scanner.Scan() {
+		line, readErr := lines.readLine()
+		if readErr != nil && line == "" {
+			if !errors.Is(readErr, io.EOF) {
+				fmt.Fprintln(os.Stderr, "input:", readErr)
+			}
 			break
 		}
-		fields, err := shell_lexer.Fields(scanner.Text())
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		fields, err := shell_lexer.Fields(line)
 		if err != nil {
 			fmt.Println("malformed input:", err)
 			continue
@@ -56,6 +61,27 @@ func main() {
 				continue
 			}
 			fmt.Printf("started pid=%d state=%s\n", snap.PID, snap.State)
+
+		case "attach":
+			if len(fields) != 2 {
+				fmt.Println("usage: attach <id>")
+				continue
+			}
+			id := agent.AgentID(fields[1])
+			if err := attach(mgr, id); err != nil {
+				var signalErr *attachSignalError
+				if errors.As(err, &signalErr) {
+					return
+				}
+				fmt.Println("attach:", err)
+				continue
+			}
+			snap, ok := mgr.Get(id)
+			if !ok {
+				fmt.Printf("detached %s\n", id)
+				continue
+			}
+			fmt.Printf("detached %s state=%s pid=%d\n", id, snap.State, snap.PID)
 
 		case "stop":
 			if len(fields) != 2 {
@@ -139,20 +165,45 @@ func main() {
 			return
 
 		default:
-			fmt.Println("commands: start <id> <cmd> [args...] | send <id> <text> | read <id> | resize <id> <rows> <cols> | stop <id> | restart <id> | status | quit")
+			fmt.Println("commands: start <id> <cmd> [args...] | attach <id> | send <id> <text> | read <id> | resize <id> <rows> <cols> | stop <id> | restart <id> | status | quit")
 		}
-	}
 
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, "input:", err)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 }
 
-// readAgent drains an agent's terminal: it blocks up to 200ms per chunk,
-// prints every byte as it arrives, and stops once the agent has been quiet
-// for a full chunk or a hard 2s cap is hit. An idle agent yields nothing. EOF
-// and EIO (the pty master signaling the process died) are normal at the end
-// of a stream; anything else is surfaced even when bytes were captured.
+type lineReader struct {
+	in *os.File
+}
+
+func newLineReader(in *os.File) *lineReader {
+	return &lineReader{in: in}
+}
+
+func (r *lineReader) readLine() (string, error) {
+	line := make([]byte, 0, 128)
+
+	var b [1]byte
+	for {
+		n, err := r.in.Read(b[:])
+		if n > 0 {
+			if b[0] == '\n' {
+				return string(line), nil
+			}
+			line = append(line, b[0])
+		}
+
+		if err != nil {
+			if len(line) > 0 {
+				return string(line), err
+			}
+			return "", err
+		}
+	}
+}
+
 func readAgent(mgr *agent.Manager, id agent.AgentID) {
 	const chunkWait = 200 * time.Millisecond
 
@@ -168,7 +219,9 @@ func readAgent(mgr *agent.Manager, id agent.AgentID) {
 		}
 
 		if err != nil {
-			readErr = err
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
 			break
 		}
 
@@ -184,9 +237,7 @@ func readAgent(mgr *agent.Manager, id agent.AgentID) {
 		}
 	}
 
-	if readErr != nil &&
-		!errors.Is(readErr, io.EOF) &&
-		!errors.Is(readErr, syscall.EIO) {
+	if readErr != nil {
 		fmt.Println("read:", readErr)
 	}
 }
