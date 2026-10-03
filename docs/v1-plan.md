@@ -362,42 +362,42 @@ while the manager and its reader keep running.
 
 ### Build
 
--   [ ] input forwarding
--   [ ] output forwarding
--   [ ] terminal resize
--   [ ] Ctrl+C behavior
--   [ ] Ctrl+D behavior
--   [ ] clean detach without killing the agent
+-   [x] input forwarding
+-   [x] output forwarding
+-   [x] terminal resize
+-   [x] Ctrl+C behavior
+-   [x] Ctrl+D behavior
+-   [x] clean detach without killing the agent
 
 Concretely:
 
--   [ ] `internal/term` — `GetState`, `MakeRaw`, `Restore`, `Size`.
+-   [x] `internal/terminal` — `GetState`, `MakeRaw`, `Restore`, `Size`.
         The original termios is restored on every exit path: normal
         return, panic, SIGINT, SIGTERM, SIGHUP, and attach failure.
         Restore is idempotent. A killed Pony must never leave the user
         with an unusable shell.
--   [ ] One always-on reader per running session, started with the
+-   [x] One always-on reader per running session, started with the
         session and owned by its lifecycle, feeding a small bounded
         ring buffer. Exactly one reader on the master at any time,
         bounded memory no matter how chatty the agent is or how long
         nobody is watching, and no client ever closes the fd --
         teardown belongs to `Wait` alone.
--   [ ] `pony attach <id>` — enter raw mode, subscribe to that
+-   [x] `pony attach <id>` — enter raw mode, subscribe to that
         session's output, forward local stdin to its PTY and its PTY
         to local stdout, byte transparent. Apply the real terminal
         size before the first byte is forwarded.
--   [ ] Resize — catch `SIGWINCH` while attached and push the new size
+-   [x] Resize — catch `SIGWINCH` while attached and push the new size
         to the agent, so a full-screen agent reflows when the window is
         dragged.
--   [ ] Keys — forward Ctrl+C as `0x03` and Ctrl+D as `0x04` so the
+-   [x] Keys — forward Ctrl+C as `0x03` and Ctrl+D as `0x04` so the
         agent's own terminal decides what they mean. Pony interprets
         neither, so neither kills Pony. Detach gets its own key
         (Ctrl+\\) that cannot collide with agent keybindings.
--   [ ] Clean detach — restore termios, unsubscribe, return to the
+-   [x] Clean detach — restore termios, unsubscribe, return to the
         prompt. It must not go through `Manager.Stop`. The session is
         left with the same generation, the same PID, and still
         `StateRunning`.
--   [ ] REPL coexistence — while attached, input is read from stdin as
+-   [x] REPL coexistence — while attached, input is read from stdin as
         a raw byte stream rather than through the REPL's buffered
         scanner, which would otherwise swallow keystrokes meant for the
         agent. `quit` still exits and still stops every agent.
@@ -447,19 +447,20 @@ detached ones keep running and keep buffering.
 
 ### Tests
 
--   [ ] Term state: `Get`/`MakeRaw`/`Restore` idempotent; restored on
+-   [x] Term state: `GetState`/`MakeRaw`/`Restore` idempotent; restored on
         panic and on a fatal signal.
--   [ ] One reader on the master per session, and buffers stay
+-   [x] One reader on the master per session, and buffers stay
         independent between agents.
--   [ ] Output survives detach and is visible on re-attach.
--   [ ] The buffer stays bounded under a flood.
--   [ ] Input and output are byte transparent.
--   [ ] Ctrl+C and Ctrl+D reach the child; neither kills Pony.
--   [ ] Detach leaves the session running, same generation and PID.
--   [ ] Resize is applied before the first forward and reaches the
+-   [x] Output survives detach and is visible on re-attach.
+-   [x] The buffer stays bounded under a flood.
+-   [x] Input and output are byte transparent.
+-   [x] Ctrl+C and Ctrl+D reach the child; neither kills Pony.
+-   [x] Detach leaves the session running, same generation and PID.
+-   [x] Resize is applied before the first forward and reaches the
         child.
--   [ ] A second agent is unaffected while the first one is attached.
--   [ ] `go test -race ./...` and CI stay green.
+-   [x] A second agent is unaffected while the first one is attached.
+-   [x] `go test -race ./...` stays green locally.
+-   [ ] CI stays green after these changes are pushed.
 
 # Phase 7 — Workspace Isolation
 
