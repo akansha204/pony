@@ -47,8 +47,9 @@ type session struct {
 
 	PID     int
 	h       *driver.Handle
-	done    chan struct{} //closed by monitor when the process dies
-	stopReq bool          //user asked for this session to stop
+	done    chan struct{}
+	stopReq bool
+	out     *outputBuffer
 }
 
 type agent struct {

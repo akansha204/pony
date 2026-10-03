@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"syscall"
@@ -95,6 +96,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 
 	s.PID = h.PID
 	s.h = h
+	s.out = newOutputBuffer(defaultOutputLimit)
 	s.StartedAt = time.Now()
 	s.done = make(chan struct{})
 	s.State = StateRunning
@@ -107,6 +109,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	a.spec = spec
 	a.session = s
 
+	go m.pump(a, s, h)
 	go m.monitor(a, s)
 
 	return snapshotOf(a), nil
@@ -195,6 +198,18 @@ func (m *Manager) Get(id AgentID) (SessionSnapshot, bool) {
 	return snapshotOf(a), true
 }
 
+func (m *Manager) sessionOutput(id AgentID) *outputBuffer {
+	a := m.agents[id]
+	if a == nil {
+		return nil
+	}
+	s := a.session
+	if s == nil || s.out == nil {
+		return nil
+	}
+	return s.out
+}
+
 func (m *Manager) runningHandle(id AgentID) *driver.Handle {
 	a := m.agents[id]
 	if a == nil {
@@ -222,29 +237,27 @@ func (m *Manager) Write(id AgentID, data []byte) (int, error) {
 }
 
 func (m *Manager) Read(id AgentID, p []byte) (int, error) {
-	m.mu.Lock()
-	h := m.runningHandle(id)
-	m.mu.Unlock()
-	if h == nil {
-		return 0, fmt.Errorf("agent %q has no running session", id)
-	}
-	n, err := m.driver.Read(h, p)
-	if err != nil {
-		return n, fmt.Errorf("read from agent %q: %w", id, err)
-	}
-	return n, nil
+	return m.read(id, p, 0)
 }
 
 func (m *Manager) ReadTimeout(id AgentID, p []byte, timeout time.Duration) (int, error) {
+	return m.read(id, p, timeout)
+}
+
+func (m *Manager) read(id AgentID, p []byte, timeout time.Duration) (int, error) {
 	m.mu.Lock()
-	h := m.runningHandle(id)
+	out := m.sessionOutput(id)
 	m.mu.Unlock()
-	if h == nil {
+	if out == nil {
 		return 0, fmt.Errorf("agent %q has no running session", id)
 	}
-	n, err := m.driver.ReadTimeout(h, p, timeout)
+
+	n, drained, err := out.wait(p, timeout)
 	if err != nil {
 		return n, fmt.Errorf("read from agent %q: %w", id, err)
+	}
+	if n == 0 && drained {
+		return 0, io.EOF
 	}
 	return n, nil
 }
@@ -301,6 +314,19 @@ func snapshotOf(a *agent) SessionSnapshot {
 	}
 }
 
+func (m *Manager) pump(a *agent, s *session, h *driver.Handle) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := m.driver.Read(h, buf)
+		if n > 0 {
+			s.out.write(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func (m *Manager) monitor(a *agent, s *session) {
 	res := m.driver.Wait(s.h)
 	m.finish(a, s, res)
@@ -325,6 +351,11 @@ func (m *Manager) finish(a *agent, s *session, res driver.ExitResult) {
 	s.ExitedAt = time.Now()
 	s.PID = 0
 	s.h = nil
+
+	if s.out != nil {
+		s.out.close()
+	}
+
 	close(s.done)
 }
 
