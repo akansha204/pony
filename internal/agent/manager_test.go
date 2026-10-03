@@ -352,7 +352,9 @@ func TestStickyProcessHelper(t *testing.T) {
 	if err := os.WriteFile(os.Getenv("GO_STICKY_HELPER_MARKER"), []byte("ready"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	select {}
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func TestStopKillsProcessIgnoringSigterm(t *testing.T) {
