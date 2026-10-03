@@ -70,13 +70,13 @@ func TestMakeRawClearsLocalLineControl(t *testing.T) {
 		t.Errorf("VTIME = %d, want 0", tio.Cc[unix.VTIME])
 	}
 
-	// Output is still cooked, so newlines still translate.
-	if tio.Oflag&unix.OPOST == 0 {
-		t.Error("raw mode cleared OPOST; output newlines would no longer return the carriage")
+	// Agent PTY bytes must not be transformed a second time by the host tty.
+	if tio.Oflag&unix.OPOST != 0 {
+		t.Error("raw mode left OPOST set; output bytes may be transformed")
 	}
 }
 
-func TestMakeRawLeavesOutputProcessingAlone(t *testing.T) {
+func TestMakeRawDisablesOutputProcessing(t *testing.T) {
 	_, slave := openTTY(t)
 
 	before := termiosOf(t, slave)
@@ -87,10 +87,8 @@ func TestMakeRawLeavesOutputProcessingAlone(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = Restore(slave.Fd(), prior) })
 
-	// With OPOST cleared, a bare \n steps down a line without returning
-	// to column 0, so every line lands one further right than the last.
-	if got := termiosOf(t, slave).Oflag; got != before.Oflag {
-		t.Errorf("output flags changed: %#x, want %#x", got, before.Oflag)
+	if got := termiosOf(t, slave).Oflag & unix.OPOST; got != 0 {
+		t.Errorf("OPOST = %#x, want it cleared", got)
 	}
 
 	// Input, by contrast, is genuinely raw.

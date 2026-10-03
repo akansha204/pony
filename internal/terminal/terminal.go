@@ -3,7 +3,6 @@ package terminal
 import (
 	"fmt"
 
-	"golang.org/x/sys/unix"
 	xterm "golang.org/x/term"
 )
 
@@ -23,35 +22,13 @@ func GetState(fd uintptr) (*State, error) {
 	return &State{inner: st}, nil
 }
 
-// MakeRaw makes input on fd raw and returns the prior state, for Restore.
-//
-// cfmakeraw also clears output post-processing, which is wrong here: Pony
-// still writes to a real terminal, so a bare \n would step down a line
-// without returning to column 0. Output is left as the user had it, the
-// way `ssh -t` does it.
+// MakeRaw makes fd raw and returns the prior state, for Restore. Keeping
+// output processing disabled preserves bytes copied from the agent's PTY.
 func MakeRaw(fd uintptr) (*State, error) {
-	before, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
-	if err != nil {
-		return nil, fmt.Errorf("read terminal state: %w", err)
-	}
-	outputFlags := before.Oflag
-
 	st, err := xterm.MakeRaw(int(fd))
 	if err != nil {
 		return nil, fmt.Errorf("make terminal raw: %w", err)
 	}
-
-	tio, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
-	if err != nil {
-		return nil, fmt.Errorf("read terminal state after raw: %w", err)
-	}
-
-	tio.Oflag = outputFlags
-
-	if err := unix.IoctlSetTermios(int(fd), unix.TCSETS, tio); err != nil {
-		return nil, fmt.Errorf("restore output processing: %w", err)
-	}
-
 	return &State{inner: st}, nil
 }
 
