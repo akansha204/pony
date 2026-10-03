@@ -34,6 +34,9 @@ func (o *outputBuffer) write(data []byte) {
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return
+	}
 
 	o.buf = append(o.buf, data...)
 	if extra := len(o.buf) - o.limit; extra > 0 {

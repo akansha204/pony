@@ -142,7 +142,7 @@ func TestOutputBufferStaysBoundedUnderAFlood(t *testing.T) {
 	}
 }
 
-func TestOutputBufferKeepsTailWrittenAfterClose(t *testing.T) {
+func TestOutputBufferIgnoresWritesAfterClose(t *testing.T) {
 	o := newOutputBuffer(1024)
 	o.close()
 	o.write([]byte("last words"))
@@ -152,11 +152,11 @@ func TestOutputBufferKeepsTailWrittenAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
-	if string(got[:n]) != "last words" {
-		t.Errorf("read %q, want %q", got[:n], "last words")
+	if n != 0 {
+		t.Errorf("read %q after close, want no bytes", got[:n])
 	}
 	if !drained {
-		t.Error("buffer did not report drained after the tail was read")
+		t.Error("closed empty buffer did not report drained")
 	}
 }
 

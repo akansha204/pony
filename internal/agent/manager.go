@@ -315,6 +315,8 @@ func snapshotOf(a *agent) SessionSnapshot {
 }
 
 func (m *Manager) pump(a *agent, s *session, h *driver.Handle) {
+	defer s.out.close()
+
 	buf := make([]byte, 4096)
 	for {
 		n, err := m.driver.Read(h, buf)
@@ -351,10 +353,6 @@ func (m *Manager) finish(a *agent, s *session, res driver.ExitResult) {
 	s.ExitedAt = time.Now()
 	s.PID = 0
 	s.h = nil
-
-	if s.out != nil {
-		s.out.close()
-	}
 
 	close(s.done)
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"io"
 	"strconv"
@@ -14,6 +15,28 @@ import (
 func pumpPTY(t *testing.T) *Manager {
 	t.Helper()
 	return NewManager(driver.NewPTYDriver())
+}
+
+type delayedFinalReadDriver struct {
+	driver.Driver
+	readStarted chan struct{}
+	releaseRead chan struct{}
+	waitStarted chan struct{}
+}
+
+func (d *delayedFinalReadDriver) Start(_ context.Context, _ driver.Spec) (*driver.Handle, error) {
+	return &driver.Handle{PID: 1}, nil
+}
+
+func (d *delayedFinalReadDriver) Read(_ *driver.Handle, p []byte) (int, error) {
+	close(d.readStarted)
+	<-d.releaseRead
+	return copy(p, []byte("final output")), io.EOF
+}
+
+func (d *delayedFinalReadDriver) Wait(_ *driver.Handle) driver.ExitResult {
+	close(d.waitStarted)
+	return driver.ExitResult{}
 }
 
 func readAll(t *testing.T, m *Manager, id AgentID, within time.Duration) string {
@@ -154,6 +177,44 @@ func TestOutputRemainsReadableAfterTheAgentExits(t *testing.T) {
 	got := readAll(t, m, spec.ID, 2*time.Second)
 	if !strings.Contains(got, "BYEBYE") {
 		t.Errorf("output %q does not contain the agent's final line", got)
+	}
+}
+
+func TestOutputClosesAfterPumpDrainsFinalRead(t *testing.T) {
+	d := &delayedFinalReadDriver{
+		readStarted: make(chan struct{}),
+		releaseRead: make(chan struct{}),
+		waitStarted: make(chan struct{}),
+	}
+	m := NewManager(d)
+	if _, err := m.Start(AgentSpec{ID: "delayed", Command: "unused"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	select {
+	case <-d.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("output pump did not start reading")
+	}
+	select {
+	case <-d.waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not start waiting")
+	}
+	waitForState(t, m, "delayed", StateStopped)
+
+	if n, err := m.ReadTimeout("delayed", make([]byte, 64), 20*time.Millisecond); n != 0 || err != nil {
+		t.Fatalf("read before final pump result = (%d, %v), want timeout without EOF", n, err)
+	}
+
+	close(d.releaseRead)
+	got := make([]byte, 64)
+	n, err := m.Read("delayed", got)
+	if err != nil || string(got[:n]) != "final output" {
+		t.Fatalf("final read = (%q, %v), want final output", got[:n], err)
+	}
+	if n, err = m.Read("delayed", got); n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("read after final output = (%d, %v), want EOF", n, err)
 	}
 }
 
