@@ -637,10 +637,10 @@ No SQLite yet.
 
 ### Invariants
 
--   [ ] Events have ordering.
--   [ ] A runtime generation has one final exit event.
--   [ ] Old generations cannot emit events against new generations.
--   [ ] Event recording does not mutate lifecycle state directly.
+-   [x] Events have ordering.
+-   [x] A runtime generation has one final exit event.
+-   [x] Old generations cannot emit events against new generations.
+-   [x] Event recording does not mutate lifecycle state directly.
 
 ### Done when
 

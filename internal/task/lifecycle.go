@@ -86,12 +86,18 @@ func (m *Manager) Refresh(id TaskID) (Snapshot, error) {
 
 	switch session.State {
 	case agent.StateCrashed:
+		changed := task.State != StateFailed
 		task.State = StateFailed
-		m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed")
-		m.record(task, event.TaskFailed, session.Generation, "task failed")
+		if changed {
+			m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed")
+			m.record(task, event.TaskFailed, session.Generation, "task failed")
+		}
 	case agent.StateStopped, agent.StateIdle:
+		changed := task.State != StateStopped
 		task.State = StateStopped
-		m.record(task, event.RuntimeExited, session.Generation, "runtime exited")
+		if changed {
+			m.record(task, event.RuntimeExited, session.Generation, "runtime exited")
+		}
 	case agent.StateStarting, agent.StateRunning, agent.StateStopping:
 		task.State = StateRunning
 	default:

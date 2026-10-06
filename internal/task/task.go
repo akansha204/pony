@@ -179,7 +179,7 @@ func (m *Manager) record(task Snapshot, eventType event.Type, generation uint64,
 	if m.events == nil {
 		return
 	}
-	m.events.Record(event.Event{
+	_, _ = m.events.Record(event.Event{
 		TaskID:     string(task.ID),
 		SessionID:  string(task.SessionID),
 		Generation: generation,

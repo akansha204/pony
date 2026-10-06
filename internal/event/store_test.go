@@ -1,14 +1,21 @@
 package event
 
 import (
+	"errors"
 	"sync"
 	"testing"
 )
 
 func TestMemoryStoreAssignsOrderedIdentity(t *testing.T) {
 	store := NewMemoryStore()
-	first := store.Record(Event{Sequence: 99, TaskID: "alpha", Type: TaskCreated})
-	second := store.Record(Event{TaskID: "beta", Type: TaskCreated})
+	first, err := store.Record(Event{Sequence: 99, TaskID: "alpha", Type: TaskCreated})
+	if err != nil {
+		t.Fatalf("Record(first): %v", err)
+	}
+	second, err := store.Record(Event{TaskID: "beta", Type: TaskCreated})
+	if err != nil {
+		t.Fatalf("Record(second): %v", err)
+	}
 
 	if first.Sequence != 1 || second.Sequence != 2 {
 		t.Fatalf("sequences = %d, %d", first.Sequence, second.Sequence)
@@ -20,6 +27,48 @@ func TestMemoryStoreAssignsOrderedIdentity(t *testing.T) {
 	if len(listed) != 2 || listed[0] != first || listed[1] != second {
 		t.Fatalf("List = %+v", listed)
 	}
+}
+
+func TestMemoryStoreRejectsSecondFinalEvent(t *testing.T) {
+	store := NewMemoryStore()
+	base := Event{TaskID: "task", SessionID: "sess-1", Generation: 1}
+	if _, err := store.Record(withType(base, RuntimeStarted)); err != nil {
+		t.Fatalf("Record(started): %v", err)
+	}
+	if _, err := store.Record(withType(base, RuntimeExited)); err != nil {
+		t.Fatalf("Record(exited): %v", err)
+	}
+	if _, err := store.Record(withType(base, RuntimeCrashed)); !errors.Is(err, ErrRuntimeFinalized) {
+		t.Fatalf("Record(second final) error = %v", err)
+	}
+	if len(store.List()) != 2 {
+		t.Fatalf("events = %+v", store.List())
+	}
+}
+
+func TestMemoryStoreRejectsOldGeneration(t *testing.T) {
+	store := NewMemoryStore()
+	base := Event{TaskID: "task", SessionID: "sess-1"}
+	current := base
+	current.Generation = 2
+	current.Type = RuntimeStarted
+	if _, err := store.Record(current); err != nil {
+		t.Fatalf("Record(current): %v", err)
+	}
+	stale := base
+	stale.Generation = 1
+	stale.Type = RuntimeExited
+	if _, err := store.Record(stale); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("Record(stale) error = %v", err)
+	}
+	if len(store.List()) != 1 {
+		t.Fatalf("events = %+v", store.List())
+	}
+}
+
+func withType(event Event, eventType Type) Event {
+	event.Type = eventType
+	return event
 }
 
 func TestMemoryStoreReturnsIndependentSlices(t *testing.T) {
