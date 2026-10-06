@@ -705,8 +705,6 @@ func TestRestartRecoversFromFailedStop(t *testing.T) {
 	}
 }
 
-// A shallow spec copy would let caller-owned Args/Env slices leak into the
-// stored spec, silently changing what a later Restart launches.
 func TestStartCopiesSpecSlices(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
 	spec := AgentSpec{ID: "copy", Command: "sleep", Args: []string{"1000"}, Env: []string{"FOO=bar"}}
@@ -724,20 +722,18 @@ func TestStartCopiesSpecSlices(t *testing.T) {
 	}
 	got, _ := m.Get(spec.ID)
 
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", got.PID))
-	if err != nil {
-		t.Fatalf("read cmdline: %v", err)
-	}
-	if !strings.Contains(string(cmdline), "sleep\x001000") {
-		t.Fatalf("restart relaunched with mutated args: %q", cmdline)
-	}
-
-	env, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", got.PID))
-	if err != nil {
-		t.Fatalf("read environ: %v", err)
-	}
-	if !strings.Contains(string(env), "FOO=bar\x00") {
-		t.Fatalf("restart lost the original env: %q", env)
+	deadline := time.Now().Add(time.Second)
+	var cmdline, env []byte
+	for {
+		cmdline, _ = os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", got.PID))
+		env, _ = os.ReadFile(fmt.Sprintf("/proc/%d/environ", got.PID))
+		if strings.Contains(string(cmdline), "sleep\x001000") && strings.Contains(string(env), "FOO=bar\x00") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("restarted process has cmdline %q and env %q", cmdline, env)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if strings.Contains(string(env), "FOO=mutated\x00") {
 		t.Fatalf("restart picked up mutated env: %q", env)
