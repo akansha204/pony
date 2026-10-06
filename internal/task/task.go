@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -41,15 +42,27 @@ type Snapshot struct {
 	State       State
 }
 
+type LaunchSpec struct {
+	Command string
+	Args    []string
+	Env     []string
+}
+
 type Manager struct {
-	mu    sync.RWMutex
-	tasks map[TaskID]Snapshot
+	mu         sync.RWMutex
+	tasks      map[TaskID]Snapshot
+	workspaces *workspace.Manager
+	agents     *agent.Manager
 }
 
 var validID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-func NewManager() *Manager {
-	return &Manager{tasks: make(map[TaskID]Snapshot)}
+func NewManager(workspaces *workspace.Manager, agents *agent.Manager) *Manager {
+	return &Manager{
+		tasks:      make(map[TaskID]Snapshot),
+		workspaces: workspaces,
+		agents:     agents,
+	}
 }
 
 func (m *Manager) Create(spec Spec) (Snapshot, error) {
@@ -101,4 +114,53 @@ func (m *Manager) List() []Snapshot {
 		return tasks[i].ID < tasks[j].ID
 	})
 	return tasks
+}
+
+func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	task, ok := m.tasks[id]
+	if !ok {
+		return Snapshot{}, fmt.Errorf("no task %q", id)
+	}
+	if task.State != StatePending {
+		return Snapshot{}, fmt.Errorf("task %q is %s", id, task.State)
+	}
+	if m.workspaces == nil || m.agents == nil {
+		return Snapshot{}, fmt.Errorf("task runtime is not configured")
+	}
+
+	ws, err := m.workspaces.Allocate(workspace.Spec{
+		TaskID:     string(task.ID),
+		Repository: task.Repository,
+		BaseRef:    task.BaseRef,
+	})
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("start task %q: %w", id, err)
+	}
+
+	session, err := m.agents.Start(agent.AgentSpec{
+		ID:      agent.AgentID(task.ID),
+		Command: launch.Command,
+		Args:    launch.Args,
+		Cwd:     ws.Path,
+		Env:     launch.Env,
+	})
+	if err != nil {
+		releaseErr := m.workspaces.Release(task.Repository, ws.ID)
+		if releaseErr != nil {
+			return Snapshot{}, errors.Join(
+				fmt.Errorf("start task %q: %w", id, err),
+				fmt.Errorf("roll back workspace %q: %w", ws.ID, releaseErr),
+			)
+		}
+		return Snapshot{}, fmt.Errorf("start task %q: %w", id, err)
+	}
+
+	task.WorkspaceID = ws.ID
+	task.SessionID = session.SessionID
+	task.State = StateRunning
+	m.tasks[id] = task
+	return task, nil
 }
