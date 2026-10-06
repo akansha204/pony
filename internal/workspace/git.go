@@ -14,6 +14,21 @@ type worktreeRecord struct {
 	branch string
 }
 
+// ResolveRepository returns the repository root after verifying baseRef.
+func ResolveRepository(path, baseRef string) (string, error) {
+	if strings.TrimSpace(baseRef) == "" {
+		return "", fmt.Errorf("base ref must not be empty")
+	}
+	repo, err := repositoryRoot(path)
+	if err != nil {
+		return "", err
+	}
+	if err := verifyCommit(repo, baseRef); err != nil {
+		return "", err
+	}
+	return repo, nil
+}
+
 func (m *Manager) List(repository string) ([]Workspace, error) {
 	repo, err := repositoryRoot(repository)
 	if err != nil {

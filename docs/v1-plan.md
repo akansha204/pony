@@ -575,6 +575,14 @@ failed
 stopped
 ```
 
+### Implementation steps
+
+-   [x] Define task identity, immutable snapshots, states, and validation.
+-   [x] Store tasks in memory with create, get, and deterministic list operations.
+-   [ ] Start a task transactionally by allocating its workspace and agent.
+-   [ ] Add stop, restart, and refresh lifecycle controls.
+-   [ ] Verify the complete task lifecycle with end-to-end tests.
+
 ### Done when
 
 A task can create a workspace and launch an agent inside it.

@@ -53,15 +53,8 @@ func (m *Manager) Validate(spec Spec) (Workspace, error) {
 	if !validTaskID.MatchString(spec.TaskID) || spec.TaskID == "." || spec.TaskID == ".." {
 		return Workspace{}, fmt.Errorf("invalid task id %q", spec.TaskID)
 	}
-	if strings.TrimSpace(spec.BaseRef) == "" {
-		return Workspace{}, fmt.Errorf("base ref must not be empty")
-	}
-
-	repo, err := repositoryRoot(spec.Repository)
+	repo, err := ResolveRepository(spec.Repository, spec.BaseRef)
 	if err != nil {
-		return Workspace{}, err
-	}
-	if err := verifyCommit(repo, spec.BaseRef); err != nil {
 		return Workspace{}, err
 	}
 
