@@ -579,9 +579,9 @@ stopped
 
 -   [x] Define task identity, immutable snapshots, states, and validation.
 -   [x] Store tasks in memory with create, get, and deterministic list operations.
--   [ ] Start a task transactionally by allocating its workspace and agent.
--   [ ] Add stop, restart, and refresh lifecycle controls.
--   [ ] Verify the complete task lifecycle with end-to-end tests.
+-   [x] Start a task transactionally by allocating its workspace and agent.
+-   [x] Add stop, restart, and refresh lifecycle controls.
+-   [x] Verify the complete task lifecycle with end-to-end tests.
 
 ### Done when
 
