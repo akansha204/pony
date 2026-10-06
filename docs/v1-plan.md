@@ -506,6 +506,16 @@ Branch
 TaskID
 ```
 
+### Implementation steps
+
+-   [x] Define workspace identity and validate task IDs, repositories,
+        base refs, paths, and branch conflicts.
+-   [x] Discover Git worktrees with `git worktree list --porcelain -z`
+        and identify worktrees safely owned by Pony.
+-   [ ] Allocate a worktree and roll back partial failures.
+-   [ ] Release only Pony-owned worktrees; make cleanup idempotent.
+-   [ ] Start agents in their allocated worktrees and verify isolation.
+
 The agent's working directory becomes the allocated worktree.
 
 ### Tests
