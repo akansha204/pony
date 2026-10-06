@@ -678,11 +678,11 @@ Run validation inside the task's worktree.
 
 Capture:
 
--   [ ] exit code
--   [ ] stdout
--   [ ] stderr
--   [ ] duration
--   [ ] timeout
+-   [x] exit code
+-   [x] stdout
+-   [x] stderr
+-   [x] duration
+-   [x] timeout
 
 Example:
 

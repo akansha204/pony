@@ -18,6 +18,9 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	if task.SessionID == "" {
 		return Snapshot{}, fmt.Errorf("task %q has not been started", id)
 	}
+	if task.State == StateValidating {
+		return Snapshot{}, fmt.Errorf("task %q is validating", id)
+	}
 	if err := m.agents.Stop(agent.AgentID(id)); err != nil {
 		return Snapshot{}, fmt.Errorf("stop task %q: %w", id, err)
 	}
@@ -42,6 +45,9 @@ func (m *Manager) Restart(id TaskID) (Snapshot, error) {
 	}
 	if task.SessionID == "" || task.WorkspaceID == "" {
 		return Snapshot{}, fmt.Errorf("task %q has not been started", id)
+	}
+	if task.State == StateValidating {
+		return Snapshot{}, fmt.Errorf("task %q is validating", id)
 	}
 	previous, ok := m.agents.Get(agent.AgentID(id))
 	if !ok {
@@ -74,6 +80,9 @@ func (m *Manager) Refresh(id TaskID) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("no task %q", id)
 	}
 	if task.SessionID == "" {
+		return task, nil
+	}
+	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed {
 		return task, nil
 	}
 

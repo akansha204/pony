@@ -10,6 +10,7 @@ import (
 
 	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/event"
+	"github.com/akansha204/pony/internal/validation"
 	"github.com/akansha204/pony/internal/workspace"
 )
 
@@ -34,13 +35,14 @@ type Spec struct {
 }
 
 type Snapshot struct {
-	ID          TaskID
-	Goal        string
-	Repository  string
-	BaseRef     string
-	WorkspaceID workspace.WorkspaceID
-	SessionID   agent.SessionID
-	State       State
+	ID            TaskID
+	Goal          string
+	Repository    string
+	BaseRef       string
+	WorkspaceID   workspace.WorkspaceID
+	WorkspacePath string
+	SessionID     agent.SessionID
+	State         State
 }
 
 type LaunchSpec struct {
@@ -55,6 +57,7 @@ type Manager struct {
 	workspaces *workspace.Manager
 	agents     *agent.Manager
 	events     event.Recorder
+	validator  *validation.Runner
 }
 
 var validID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
@@ -64,6 +67,7 @@ func NewManager(workspaces *workspace.Manager, agents *agent.Manager, recorder .
 		tasks:      make(map[TaskID]Snapshot),
 		workspaces: workspaces,
 		agents:     agents,
+		validator:  validation.NewRunner(),
 	}
 	if len(recorder) > 0 {
 		m.events = recorder[0]
@@ -166,6 +170,7 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 	}
 
 	task.WorkspaceID = ws.ID
+	task.WorkspacePath = ws.Path
 	task.SessionID = session.SessionID
 	task.State = StateRunning
 	m.tasks[id] = task
