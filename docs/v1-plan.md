@@ -513,7 +513,7 @@ TaskID
 -   [x] Discover Git worktrees with `git worktree list --porcelain -z`
         and identify worktrees safely owned by Pony.
 -   [x] Allocate a worktree and roll back partial failures.
--   [ ] Release only Pony-owned worktrees; make cleanup idempotent.
+-   [x] Release only Pony-owned worktrees; make cleanup idempotent.
 -   [ ] Start agents in their allocated worktrees and verify isolation.
 
 The agent's working directory becomes the allocated worktree.
@@ -522,8 +522,8 @@ The agent's working directory becomes the allocated worktree.
 
 -   [x] Two tasks get different worktrees.
 -   [ ] Both can run simultaneously.
--   [ ] Releasing one does not remove the other.
--   [ ] Cleanup is idempotent.
+-   [x] Releasing one does not remove the other.
+-   [x] Cleanup is idempotent.
 
 ### Done when
 
