@@ -136,16 +136,27 @@ func checkBranchName(branch string) error {
 }
 
 func verifyBranchAvailable(repo, branch string) error {
+	exists, err := branchExists(repo, branch)
+	if err != nil {
+		return fmt.Errorf("check workspace branch %q: %w", branch, err)
+	}
+	if exists {
+		return fmt.Errorf("workspace branch %q already exists", branch)
+	}
+	return nil
+}
+
+func branchExists(repo, branch string) (bool, error) {
 	cmd := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	err := cmd.Run()
 	if err == nil {
-		return fmt.Errorf("workspace branch %q already exists", branch)
+		return true, nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return nil
+		return false, nil
 	}
-	return fmt.Errorf("check workspace branch %q: %w", branch, err)
+	return false, err
 }
 
 func gitOutput(repo string, args ...string) ([]byte, error) {
