@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/akansha204/pony/internal/agent"
+	"github.com/akansha204/pony/internal/event"
 	"github.com/akansha204/pony/internal/workspace"
 )
 
@@ -53,16 +54,21 @@ type Manager struct {
 	tasks      map[TaskID]Snapshot
 	workspaces *workspace.Manager
 	agents     *agent.Manager
+	events     event.Recorder
 }
 
 var validID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-func NewManager(workspaces *workspace.Manager, agents *agent.Manager) *Manager {
-	return &Manager{
+func NewManager(workspaces *workspace.Manager, agents *agent.Manager, recorder ...event.Recorder) *Manager {
+	m := &Manager{
 		tasks:      make(map[TaskID]Snapshot),
 		workspaces: workspaces,
 		agents:     agents,
 	}
+	if len(recorder) > 0 {
+		m.events = recorder[0]
+	}
+	return m
 }
 
 func (m *Manager) Create(spec Spec) (Snapshot, error) {
@@ -92,6 +98,7 @@ func (m *Manager) Create(spec Spec) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("task %q already exists", spec.ID)
 	}
 	m.tasks[spec.ID] = snapshot
+	m.record(snapshot, event.TaskCreated, 0, "task created")
 	return snapshot, nil
 }
 
@@ -162,5 +169,21 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 	task.SessionID = session.SessionID
 	task.State = StateRunning
 	m.tasks[id] = task
+	m.record(task, event.WorkspaceCreated, 0, "workspace created")
+	m.record(task, event.SessionStarted, session.Generation, "session started")
+	m.record(task, event.RuntimeStarted, session.Generation, "runtime started")
 	return task, nil
+}
+
+func (m *Manager) record(task Snapshot, eventType event.Type, generation uint64, message string) {
+	if m.events == nil {
+		return
+	}
+	m.events.Record(event.Event{
+		TaskID:     string(task.ID),
+		SessionID:  string(task.SessionID),
+		Generation: generation,
+		Type:       eventType,
+		Message:    message,
+	})
 }
