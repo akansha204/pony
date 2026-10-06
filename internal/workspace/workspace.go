@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type WorkspaceID string
@@ -28,6 +29,7 @@ type Workspace struct {
 
 type Manager struct {
 	root string
+	mu   sync.Mutex
 }
 
 var validTaskID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
@@ -40,7 +42,11 @@ func NewManager(root string) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root: %w", err)
 	}
-	return &Manager{root: filepath.Clean(abs)}, nil
+	canonical, err := canonicalPath(abs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+	return &Manager{root: canonical}, nil
 }
 
 func (m *Manager) Validate(spec Spec) (Workspace, error) {
@@ -105,4 +111,27 @@ func pathsOverlap(a, b string) bool {
 func pathContains(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))))
+}
+
+func canonicalPath(path string) (string, error) {
+	path = filepath.Clean(path)
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(path))
+		path = parent
+	}
 }

@@ -113,10 +113,18 @@ func repositoryRoot(path string) (string, error) {
 }
 
 func verifyCommit(repo, ref string) error {
-	if _, err := gitOutput(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}"); err != nil {
+	if _, err := resolveCommit(repo, ref); err != nil {
 		return fmt.Errorf("base ref %q does not resolve to a commit: %w", ref, err)
 	}
 	return nil
+}
+
+func resolveCommit(repo, ref string) (string, error) {
+	out, err := gitOutput(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func checkBranchName(branch string) error {

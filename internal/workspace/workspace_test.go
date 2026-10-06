@@ -124,6 +124,24 @@ func TestValidateRejectsWorkspaceConflicts(t *testing.T) {
 			t.Fatal("Validate accepted a workspace inside the repository")
 		}
 	})
+
+	t.Run("symlink overlaps repository", func(t *testing.T) {
+		target := filepath.Join(repo, "linked-workspaces")
+		if err := os.Mkdir(target, 0o755); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		link := filepath.Join(t.TempDir(), "workspaces")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+		m, err := NewManager(link)
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		if _, err := m.Validate(Spec{TaskID: "task", Repository: repo, BaseRef: "main"}); err == nil {
+			t.Fatal("Validate accepted a symlinked workspace inside the repository")
+		}
+	})
 }
 
 func TestNewManagerRejectsEmptyRoot(t *testing.T) {
