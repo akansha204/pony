@@ -514,14 +514,14 @@ TaskID
         and identify worktrees safely owned by Pony.
 -   [x] Allocate a worktree and roll back partial failures.
 -   [x] Release only Pony-owned worktrees; make cleanup idempotent.
--   [ ] Start agents in their allocated worktrees and verify isolation.
+-   [x] Start agents in their allocated worktrees and verify isolation.
 
 The agent's working directory becomes the allocated worktree.
 
 ### Tests
 
 -   [x] Two tasks get different worktrees.
--   [ ] Both can run simultaneously.
+-   [x] Both can run simultaneously.
 -   [x] Releasing one does not remove the other.
 -   [x] Cleanup is idempotent.
 
@@ -843,7 +843,7 @@ Checklist:
 -   [ ] one PTY driver works
 -   [ ] terminal input/output works
 -   [ ] terminal resize works
--   [ ] agents can run in isolated Git worktrees
+-   [x] agents can run in isolated Git worktrees
 -   [ ] tasks are separate from sessions
 -   [ ] lifecycle events are observable
 -   [ ] validation is deterministic
