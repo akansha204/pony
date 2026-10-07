@@ -18,8 +18,8 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	if task.SessionID == "" {
 		return Snapshot{}, fmt.Errorf("task %q has not been started", id)
 	}
-	if task.State == StateValidating {
-		return Snapshot{}, fmt.Errorf("task %q is validating", id)
+	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed {
+		return Snapshot{}, fmt.Errorf("task %q is %s", id, task.State)
 	}
 	if err := m.agents.Stop(agent.AgentID(id)); err != nil {
 		return Snapshot{}, fmt.Errorf("stop task %q: %w", id, err)
