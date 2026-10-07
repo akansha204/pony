@@ -31,3 +31,30 @@ make run        # run the CLI
 make test       # run tests with the race detector
 make check      # fmt + tidy + vet + test (mirrors CI)
 ```
+
+## Run a coding task
+
+Start Pony with `make run`, then enter a command like:
+
+```text
+pony> run --id example --goal "Fix the failing test" --repo /path/to/repo --command codex --validate "go test ./..."
+pony> list
+pony> attach example
+```
+
+Use `--arg VALUE` for each agent argument, `--base-ref REF` to choose a
+base commit (default `HEAD`), and repeat `--validate "COMMAND"` for
+additional checks. Each check has a five-minute timeout. The task's
+goal is sent to the agent on startup. A clean agent exit runs the checks
+in order; all must pass for the task to become `verified`.
+
+`attach` returns to Pony with Ctrl+\\. `stop ID` stops a task without
+validating it; `validate ID` runs its checks manually. `restart ID`
+reuses its worktree, and `clean ID` releases a stopped task's clean
+worktree. Pony refuses to clean a worktree with uncommitted changes.
+`clean` leaves its Git branch intact, so use a new task ID for the next run.
+
+Task state lives in the current Pony process. Closing Pony stops running
+agents and leaves worktrees available for inspection. The default
+worktree root is `$XDG_DATA_HOME/pony/workspaces`, or
+`$HOME/.local/share/pony/workspaces` when `XDG_DATA_HOME` is unset.
