@@ -127,6 +127,26 @@ func (m *Manager) List() []Snapshot {
 	return tasks
 }
 
+func (m *Manager) Clean(id TaskID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	task, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("no task %q", id)
+	}
+	if task.State == StateRunning || task.State == StateValidating {
+		return fmt.Errorf("task %q is %s", id, task.State)
+	}
+	if task.WorkspaceID != "" {
+		if err := m.workspaces.Release(task.Repository, task.WorkspaceID); err != nil {
+			return fmt.Errorf("clean task %q: %w", id, err)
+		}
+	}
+	delete(m.tasks, id)
+	return nil
+}
+
 func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
