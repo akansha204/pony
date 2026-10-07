@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -231,6 +234,9 @@ func TestCleanRefusesRunningAndDirtyTasks(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("dirty file missing: %v", err)
 	}
+	if _, ok := a.tasks.Get("task"); !ok {
+		t.Fatal("clean failure removed the task")
+	}
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
@@ -286,5 +292,133 @@ func TestCLICommandRunsTaskToVerification(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "task running in") || !strings.Contains(output.String(), "task             verified") {
 		t.Fatalf("CLI output does not show verified task:\n%s", output.String())
+	}
+}
+
+func TestStopWaitsForAutomaticValidation(t *testing.T) {
+	a, repo := cliApp(t)
+	_, err := a.run(runOptions{
+		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
+		command: "sh", args: []string{"-c", "read -r goal; exit 0"},
+		steps: []validation.Step{{Command: "sleep", Args: []string{"0.2"}, Timeout: time.Second}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCLIState(t, a, "task", task.StateValidating)
+	if _, err := a.stop("task"); err == nil {
+		t.Fatal("stop interrupted automatic validation")
+	}
+	waitCLIState(t, a, "task", task.StateVerified)
+}
+
+func TestShutdownCancelsActiveValidation(t *testing.T) {
+	a, repo := cliApp(t)
+	started, err := a.run(runOptions{
+		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
+		command: "sh", args: []string{"-c", "read -r goal; exit 0"},
+		steps: []validation.Step{{Command: "sh", Args: []string{"-c", "sleep 1000 & echo $! > child.pid; wait"}, Timeout: time.Minute}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCLIState(t, a, "task", task.StateValidating)
+	pidFile := filepath.Join(started.WorkspacePath, "child.pid")
+	deadline := time.Now().Add(3 * time.Second)
+	var raw []byte
+	for {
+		raw, err = os.ReadFile(pidFile)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("validation child did not start: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Now()
+	if err := a.shutdown(); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if time.Since(startedAt) > 3*time.Second {
+		t.Fatal("shutdown waited for the validation timeout")
+	}
+	if cliProcessAlive(pid) {
+		t.Fatalf("validation child %d survived shutdown", pid)
+	}
+}
+
+func cliProcessAlive(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	end := strings.LastIndex(string(raw), ")")
+	if end < 0 {
+		return true
+	}
+	fields := strings.Fields(string(raw)[end+1:])
+	return len(fields) > 0 && fields[0] != "Z"
+}
+
+func TestCLIShutdownOnSIGTERMStopsAgent(t *testing.T) {
+	repo := cliRepository(t)
+	dataRoot := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$")
+	cmd.Env = append(os.Environ(), "PONY_CLI_TEST_HELPER=1", "XDG_DATA_HOME="+dataRoot)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output, errorsOut bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &errorsOut
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	line := "run --id task --goal goal --repo " + repo + " --command sh --arg -c --arg 'read -r goal; echo $$ > agent.pid; sleep 1000' --validate true\n"
+	if _, err := stdin.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(dataRoot, "pony", "workspaces", "task", "agent.pid")
+	deadline := time.Now().Add(5 * time.Second)
+	var raw []byte
+	for {
+		raw, err = os.ReadFile(pidFile)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent did not start: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Pony shutdown: %v\nstdout: %s\nstderr: %s", err, output.String(), errorsOut.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Pony did not exit after SIGTERM")
+	}
+	if cliProcessAlive(pid) {
+		t.Fatalf("agent process %d survived Pony shutdown", pid)
 	}
 }

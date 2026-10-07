@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,6 +81,7 @@ func defaultWorkspaceRoot() (string, error) {
 type runState struct {
 	steps         []validation.Step
 	stopRequested bool
+	validating    bool
 }
 
 type app struct {
@@ -86,7 +89,10 @@ type app struct {
 	workspaces *workspace.Manager
 	tasks      *task.Manager
 	events     *event.MemoryStore
+	ctx        context.Context
+	cancel     context.CancelFunc
 	mu         sync.Mutex
+	watchers   sync.WaitGroup
 	runs       map[task.TaskID]*runState
 }
 
@@ -97,9 +103,11 @@ func newApp(root string) (*app, error) {
 	}
 	agents := agent.NewManager(driver.NewPTYDriver())
 	events := event.NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
 	return &app{
 		agents: agents, workspaces: workspaces,
 		tasks: task.NewManager(workspaces, agents, events), events: events,
+		ctx: ctx, cancel: cancel,
 		runs: make(map[task.TaskID]*runState),
 	}, nil
 }
@@ -132,28 +140,41 @@ func (a *app) watch(id task.TaskID) {
 	if !ok {
 		return
 	}
+	a.watchers.Add(1)
 	go func(generation uint64) {
+		defer a.watchers.Done()
 		ticker := time.NewTicker(20 * time.Millisecond)
 		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			current, ok := a.agents.Get(agent.AgentID(id))
 			if !ok || current.Generation != generation {
-				return
-			}
-			a.mu.Lock()
-			run := a.runs[id]
-			stopped := run == nil || run.stopRequested
-			a.mu.Unlock()
-			if stopped {
 				return
 			}
 			if current.State != agent.StateStopped && current.State != agent.StateCrashed {
 				continue
 			}
+			a.mu.Lock()
+			run := a.runs[id]
+			if run == nil || run.stopRequested {
+				a.mu.Unlock()
+				return
+			}
+			if current.State == agent.StateStopped {
+				run.validating = true
+			}
+			a.mu.Unlock()
 			snapshot, err := a.tasks.Refresh(id)
 			if err == nil && snapshot.State == task.StateStopped {
-				_, _, _ = a.tasks.Validate(id, run.steps)
+				_, _, _ = a.tasks.ValidateContext(a.ctx, id, run.steps)
 			}
+			a.mu.Lock()
+			run.validating = false
+			a.mu.Unlock()
 			return
 		}
 	}(session.Generation)
@@ -162,6 +183,10 @@ func (a *app) watch(id task.TaskID) {
 func (a *app) stop(id task.TaskID) (task.Snapshot, error) {
 	a.mu.Lock()
 	if run := a.runs[id]; run != nil {
+		if run.validating {
+			a.mu.Unlock()
+			return task.Snapshot{}, fmt.Errorf("task %q is validating", id)
+		}
 		run.stopRequested = true
 	}
 	a.mu.Unlock()
@@ -177,6 +202,12 @@ func (a *app) stop(id task.TaskID) (task.Snapshot, error) {
 }
 
 func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
+	a.mu.Lock()
+	if run := a.runs[id]; run != nil && run.validating {
+		a.mu.Unlock()
+		return task.Snapshot{}, fmt.Errorf("task %q is validating", id)
+	}
+	a.mu.Unlock()
 	snapshot, err := a.tasks.Restart(id)
 	if err != nil {
 		return snapshot, err
@@ -201,6 +232,12 @@ func (a *app) validate(id task.TaskID) (task.Snapshot, []validation.Result, erro
 }
 
 func (a *app) clean(id task.TaskID) error {
+	a.mu.Lock()
+	if run := a.runs[id]; run != nil && run.validating {
+		a.mu.Unlock()
+		return fmt.Errorf("task %q is validating", id)
+	}
+	a.mu.Unlock()
 	if err := a.tasks.Clean(id); err != nil {
 		return err
 	}
@@ -208,4 +245,16 @@ func (a *app) clean(id task.TaskID) error {
 	delete(a.runs, id)
 	a.mu.Unlock()
 	return nil
+}
+
+func (a *app) shutdown() error {
+	a.cancel()
+	a.watchers.Wait()
+	var stopErrors []error
+	for _, snapshot := range a.agents.Snapshots() {
+		if err := a.agents.Stop(snapshot.AgentID); err != nil {
+			stopErrors = append(stopErrors, err)
+		}
+	}
+	return errors.Join(stopErrors...)
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -181,5 +182,19 @@ func TestLineReaderHandsFollowingInputToTheNextReader(t *testing.T) {
 	}
 	if string(buf) != "typed while attaching" {
 		t.Errorf("next reader got %q, want %q", buf, "typed while attaching")
+	}
+}
+
+func TestLineReaderStopsOnSignalWithoutInput(t *testing.T) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer read.Close()
+	defer write.Close()
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGTERM
+	if _, err := newLineReader(read).readLineWithSignals(signals); err == nil {
+		t.Fatal("readLineWithSignals ignored SIGTERM")
 	}
 }

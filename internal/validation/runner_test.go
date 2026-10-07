@@ -1,6 +1,8 @@
 package validation
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,5 +148,54 @@ func TestRunnerLeavesNoSignalableChild(t *testing.T) {
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
 	if err := syscall.Kill(pid, 0); err == nil && processAlive(pid) {
 		t.Fatalf("child process %d is still signalable and alive", pid)
+	}
+}
+
+func TestRunnerCancellationKillsProcessGroup(t *testing.T) {
+	cwd := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := NewRunner().RunContext(ctx, cwd, Step{
+			Command: "sh",
+			Args:    []string{"-c", "sleep 1000 & echo $! > child.pid; wait"},
+			Timeout: time.Minute,
+		})
+		done <- outcome{result, err}
+	}()
+	pidFile := filepath.Join(cwd, "child.pid")
+	deadline := time.Now().Add(3 * time.Second)
+	var raw []byte
+	for {
+		var err error
+		raw, err = os.ReadFile(pidFile)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child did not start: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) || got.result.TimedOut {
+			t.Fatalf("cancellation = %+v, %v", got.result, got.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("validation did not stop after cancellation")
+	}
+	if processAlive(pid) {
+		t.Fatalf("child process %d survived cancellation", pid)
 	}
 }

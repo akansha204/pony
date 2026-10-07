@@ -163,3 +163,35 @@ func TestLifecycleRejectsUnstartedAndMissingTasks(t *testing.T) {
 		t.Fatal("Refresh accepted a missing task")
 	}
 }
+
+func TestCleanPreservesTaskWhenRepositoryUnavailable(t *testing.T) {
+	repo := testRepository(t)
+	workspaces, err := workspace.NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := agent.NewManager(driver.NewProcessDriver())
+	tasks := NewManager(workspaces, agents)
+	if _, err := tasks.Create(Spec{ID: "task", Goal: "goal", Repository: repo, BaseRef: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	started, err := tasks.Start("task", LaunchSpec{Command: "sleep", Args: []string{"1000"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.Stop("task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(repo, repo+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.Clean("task"); err == nil {
+		t.Fatal("Clean succeeded with a missing repository")
+	}
+	if _, ok := tasks.Get("task"); !ok {
+		t.Fatal("Clean removed the task after release failed")
+	}
+	if _, err := os.Stat(started.WorkspacePath); err != nil {
+		t.Fatalf("workspace was removed after release failed: %v", err)
+	}
+}

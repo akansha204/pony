@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/akansha204/pony/internal/agent"
@@ -9,6 +10,10 @@ import (
 )
 
 func (m *Manager) Validate(id TaskID, steps []validation.Step) (Snapshot, []validation.Result, error) {
+	return m.ValidateContext(context.Background(), id, steps)
+}
+
+func (m *Manager) ValidateContext(ctx context.Context, id TaskID, steps []validation.Step) (Snapshot, []validation.Result, error) {
 	if len(steps) == 0 {
 		return Snapshot{}, nil, fmt.Errorf("task %q has no validation steps", id)
 	}
@@ -44,7 +49,7 @@ func (m *Manager) Validate(id TaskID, steps []validation.Step) (Snapshot, []vali
 
 	results := make([]validation.Result, 0, len(steps))
 	for _, step := range steps {
-		result, err := m.validator.Run(task.WorkspacePath, step)
+		result, err := m.validator.RunContext(ctx, task.WorkspacePath, step)
 		results = append(results, result)
 		if err != nil {
 			failed := m.finishValidation(task, session.Generation, false)

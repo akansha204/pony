@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/shell_lexer"
@@ -26,19 +30,19 @@ func main() {
 		os.Exit(1)
 	}
 	mgr := a.agents
-
 	defer func() {
-		for _, snap := range mgr.Snapshots() {
-			if err := mgr.Stop(snap.AgentID); err != nil {
-				fmt.Println("cleanup:", err)
-			}
+		if err := a.shutdown(); err != nil {
+			fmt.Fprintln(os.Stderr, "cleanup:", err)
 		}
 	}()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
 
 	lines := newLineReader(os.Stdin)
 	for {
 		fmt.Print("pony> ")
-		line, readErr := lines.readLine()
+		line, readErr := lines.readLineWithSignals(signals)
 		if readErr != nil && line == "" {
 			if !errors.Is(readErr, io.EOF) {
 				fmt.Fprintln(os.Stderr, "input:", readErr)
@@ -265,10 +269,32 @@ func newLineReader(in *os.File) *lineReader {
 }
 
 func (r *lineReader) readLine() (string, error) {
+	return r.readLineWithSignals(nil)
+}
+
+func (r *lineReader) readLineWithSignals(signals <-chan os.Signal) (string, error) {
 	line := make([]byte, 0, 128)
 
 	var b [1]byte
 	for {
+		if signals != nil {
+			select {
+			case sig := <-signals:
+				return "", fmt.Errorf("received %s", sig)
+			default:
+			}
+			fds := []unix.PollFd{{Fd: int32(r.in.Fd()), Events: unix.POLLIN | unix.POLLHUP}}
+			ready, err := unix.Poll(fds, 100)
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			if err != nil {
+				return "", err
+			}
+			if ready == 0 {
+				continue
+			}
+		}
 		n, err := r.in.Read(b[:])
 		if n > 0 {
 			if b[0] == '\n' {

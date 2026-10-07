@@ -2,6 +2,7 @@ package validation
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -17,12 +18,22 @@ func NewRunner() *Runner {
 }
 
 func (r *Runner) Run(cwd string, step Step) (Result, error) {
+	return r.RunContext(context.Background(), cwd, step)
+}
+
+func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	result := Result{Step: cloneStep(step), ExitCode: -1}
 	if err := step.Validate(); err != nil {
 		return result, err
 	}
 	if strings.TrimSpace(cwd) == "" {
 		return result, fmt.Errorf("validation working directory must not be empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 
 	cmd := exec.Command(step.Command, step.Args...)
@@ -63,22 +74,32 @@ func (r *Runner) Run(cwd string, step Step) (Result, error) {
 
 	case <-timer.C:
 		result.TimedOut = true
-		killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		waitErr := <-done
-		result.Duration = time.Since(started)
-		result.Stdout = stdout.String()
-		result.Stderr = stderr.String()
-		if killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
-			return result, fmt.Errorf("kill validation process group: %w", killErr)
+		return terminateGroup(cmd, done, started, &stdout, &stderr, result)
+	case <-ctx.Done():
+		result, err := terminateGroup(cmd, done, started, &stdout, &stderr, result)
+		if err != nil {
+			return result, errors.Join(ctx.Err(), err)
 		}
-		if waitErr != nil {
-			var exitErr *exec.ExitError
-			if !errors.As(waitErr, &exitErr) {
-				return result, fmt.Errorf("wait for timed-out validation command %q: %w", step.Command, waitErr)
-			}
-		}
-		return result, nil
+		return result, ctx.Err()
 	}
+}
+
+func terminateGroup(cmd *exec.Cmd, done <-chan error, started time.Time, stdout, stderr *bytes.Buffer, result Result) (Result, error) {
+	killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	waitErr := <-done
+	result.Duration = time.Since(started)
+	result.Stdout = stdout.String()
+	result.Stderr = stderr.String()
+	if killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+		return result, fmt.Errorf("kill validation process group: %w", killErr)
+	}
+	if waitErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) {
+			return result, fmt.Errorf("wait for terminated validation command %q: %w", result.Step.Command, waitErr)
+		}
+	}
+	return result, nil
 }
 
 func cloneStep(step Step) Step {
