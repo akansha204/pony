@@ -10,12 +10,22 @@ import (
 	"time"
 
 	"github.com/akansha204/pony/internal/agent"
-	"github.com/akansha204/pony/internal/driver"
 	"github.com/akansha204/pony/internal/shell_lexer"
+	"github.com/akansha204/pony/internal/task"
 )
 
 func main() {
-	mgr := agent.NewManager(driver.NewPTYDriver())
+	root, err := defaultWorkspaceRoot()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "workspace root:", err)
+		os.Exit(1)
+	}
+	a, err := newApp(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start Pony:", err)
+		os.Exit(1)
+	}
+	mgr := a.agents
 
 	defer func() {
 		for _, snap := range mgr.Snapshots() {
@@ -49,9 +59,63 @@ func main() {
 		}
 
 		switch fields[0] {
+		case "run":
+			opts, err := parseRun(fields[1:])
+			if err != nil {
+				fmt.Println("run:", err)
+				continue
+			}
+			snapshot, err := a.run(opts)
+			if err != nil {
+				fmt.Println("run:", err)
+				continue
+			}
+			fmt.Printf("task %s running in %s (attach %s)\n", snapshot.ID, snapshot.WorkspacePath, snapshot.ID)
+
+		case "list":
+			for _, snapshot := range a.tasks.List() {
+				fmt.Printf("%-16s %-11s %s\n", snapshot.ID, snapshot.State, snapshot.WorkspacePath)
+			}
+
+		case "validate":
+			if len(fields) != 2 {
+				fmt.Println("usage: validate <task-id>")
+				continue
+			}
+			snapshot, results, err := a.validate(task.TaskID(fields[1]))
+			for i, result := range results {
+				fmt.Printf("step %d: exit=%d timeout=%t duration=%s\n", i+1, result.ExitCode, result.TimedOut, result.Duration.Round(time.Millisecond))
+				if result.Stdout != "" {
+					fmt.Print(result.Stdout)
+				}
+				if result.Stderr != "" {
+					fmt.Fprint(os.Stderr, result.Stderr)
+				}
+			}
+			if err != nil {
+				fmt.Println("validate:", err)
+				continue
+			}
+			fmt.Printf("task %s %s\n", snapshot.ID, snapshot.State)
+
+		case "clean":
+			if len(fields) != 2 {
+				fmt.Println("usage: clean <task-id>")
+				continue
+			}
+			if err := a.clean(task.TaskID(fields[1])); err != nil {
+				fmt.Println("clean:", err)
+				continue
+			}
+			fmt.Printf("cleaned %s\n", fields[1])
+
 		case "start":
 			if len(fields) < 3 {
 				fmt.Println("usage: start <id> <command> [args...]")
+				continue
+			}
+			if _, exists := a.tasks.Get(task.TaskID(fields[1])); exists {
+				fmt.Printf("start: %s is a task ID; use restart %s\n", fields[1], fields[1])
 				continue
 			}
 			spec := agent.AgentSpec{ID: agent.AgentID(fields[1]), Command: fields[2], Args: fields[3:]}
@@ -89,6 +153,15 @@ func main() {
 				continue
 			}
 			id := agent.AgentID(fields[1])
+			if _, ok := a.tasks.Get(task.TaskID(id)); ok {
+				snapshot, err := a.stop(task.TaskID(id))
+				if err != nil {
+					fmt.Println("stop:", err)
+				} else {
+					fmt.Printf("task %s %s\n", snapshot.ID, snapshot.State)
+				}
+				continue
+			}
 			if err := mgr.Stop(id); err != nil {
 				fmt.Println("stop:", err)
 				continue
@@ -101,6 +174,15 @@ func main() {
 				continue
 			}
 			id := agent.AgentID(fields[1])
+			if _, ok := a.tasks.Get(task.TaskID(id)); ok {
+				snapshot, err := a.restart(task.TaskID(id))
+				if err != nil {
+					fmt.Println("restart:", err)
+				} else {
+					fmt.Printf("task %s %s\n", snapshot.ID, snapshot.State)
+				}
+				continue
+			}
 			if err := mgr.Restart(id); err != nil {
 				fmt.Println("restart:", err)
 				continue
@@ -165,7 +247,7 @@ func main() {
 			return
 
 		default:
-			fmt.Println("commands: start <id> <cmd> [args...] | attach <id> | send <id> <text> | read <id> | resize <id> <rows> <cols> | stop <id> | restart <id> | status | quit")
+			fmt.Println("commands: run | list | attach <id> | stop <id> | restart <id> | validate <id> | clean <id> | start <id> <cmd> [args...] | send <id> <text> | read <id> | resize <id> <rows> <cols> | status | quit")
 		}
 
 		if errors.Is(readErr, io.EOF) {
