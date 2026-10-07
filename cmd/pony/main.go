@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 
 	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/shell_lexer"
@@ -35,6 +36,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "cleanup:", err)
 		}
 	}()
+	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "--cli") {
+		fmt.Fprintln(os.Stderr, "usage: pony [--cli]")
+		return
+	}
+	if len(os.Args) == 1 && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		if err := runTUI(a); err != nil {
+			fmt.Fprintln(os.Stderr, "tui:", err)
+		}
+		return
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)

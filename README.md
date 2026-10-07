@@ -27,14 +27,23 @@ Requires Go 1.26+.
 
 ```sh
 make build      # compile to bin/pony
-make run        # run the CLI
+make run        # open the TUI in a terminal
 make test       # run tests with the race detector
 make check      # fmt + tidy + vet + test (mirrors CI)
 ```
 
 ## Run a coding task
 
-Start Pony with `make run`, then enter a command like:
+Start Pony with `make run`. Press `:` and enter a command like:
+
+```text
+run --id example --goal "Fix the failing test" --repo /path/to/repo --command codex --validate "go test ./..."
+```
+
+The initial TUI shows task status and details. Use `j`/`k` or the arrow
+keys to select a task, `r` to refresh, and `q` to quit. Other task
+actions are still in the CLI: start Pony with `pony --cli` (or
+`go run ./cmd/pony --cli`) to use commands such as:
 
 ```text
 pony> run --id example --goal "Fix the failing test" --repo /path/to/repo --command codex --validate "go test ./..."

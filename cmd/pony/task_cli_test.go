@@ -258,6 +258,10 @@ func TestRunRejectsAgentIDCollision(t *testing.T) {
 
 func TestCLIHelperProcess(t *testing.T) {
 	if os.Getenv("PONY_CLI_TEST_HELPER") == "1" {
+		os.Args = []string{"pony", "--cli"}
+		main()
+	} else if os.Getenv("PONY_TUI_TEST_HELPER") == "1" {
+		os.Args = []string{"pony"}
 		main()
 	}
 }
