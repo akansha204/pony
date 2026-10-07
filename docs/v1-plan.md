@@ -717,12 +717,8 @@ Make the whole system usable through one command.
 
 Target:
 
-``` bash
-pony run \
-  --id example \
-  --repo ~/code/project \
-  --command codex \
-  --validate "go test ./..."
+``` text
+pony> run --id example --goal "Implement the requested change" --repo /path/to/project --command codex --validate "go test ./..."
 ```
 
 Expected lifecycle:
@@ -747,17 +743,20 @@ verified / failed
 
 CLI surface:
 
-``` bash
-pony run
-pony list
-pony attach
-pony stop
-pony restart
-pony validate
-pony clean
+``` text
+pony> run
+pony> list
+pony> attach
+pony> stop
+pony> restart
+pony> validate
+pony> clean
 ```
 
 Keep the CLI simple.
+
+Tasks live in the current interactive Pony process until daemon and
+persistence support are added later.
 
 No TUI yet.
 
@@ -856,7 +855,7 @@ Checklist:
 -   [ ] lifecycle events are observable
 -   [ ] validation is deterministic
 -   [ ] execution status and verification status are separate
--   [ ] end-to-end `pony run` works
+-   [x] end-to-end `pony run` works
 -   [ ] `go test -race ./...` passes
 -   [ ] CI is green
 
