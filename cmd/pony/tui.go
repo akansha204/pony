@@ -15,6 +15,9 @@ type refreshMsg struct{}
 type tuiModel struct {
 	list     func() []task.Snapshot
 	run      func(runOptions) error
+	stop     func(task.TaskID) error
+	restart  func(task.TaskID) error
+	clean    func(task.TaskID) error
 	tasks    []task.Snapshot
 	selected int
 	width    int
@@ -31,6 +34,15 @@ func newTUIModel(a *app) tuiModel {
 			_, err := a.run(opts)
 			return err
 		},
+		stop: func(id task.TaskID) error {
+			_, err := a.stop(id)
+			return err
+		},
+		restart: func(id task.TaskID) error {
+			_, err := a.restart(id)
+			return err
+		},
+		clean: a.clean,
 		tasks: a.tasks.List(),
 	}
 }
@@ -81,6 +93,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			m.reload()
+		case "s":
+			m.applySelected("stop", m.stop)
+		case "R":
+			m.applySelected("restart", m.restart)
+		case "c":
+			m.applySelected("clean", m.clean)
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -89,6 +107,24 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, scheduleRefresh()
 	}
 	return m, nil
+}
+
+func (m *tuiModel) applySelected(action string, fn func(task.TaskID) error) {
+	if len(m.tasks) == 0 {
+		m.message = "no task selected"
+		return
+	}
+	id := m.tasks[m.selected].ID
+	if fn == nil {
+		m.message = action + ": not available"
+		return
+	}
+	if err := fn(id); err != nil {
+		m.message = action + " " + string(id) + ": " + err.Error()
+		return
+	}
+	m.message = action + " " + string(id)
+	m.reload()
 }
 
 func (m *tuiModel) submit() {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -93,6 +94,53 @@ func TestTUIRunCommand(t *testing.T) {
 	m.submit()
 	if !strings.Contains(m.message, "only run") {
 		t.Fatalf("unsupported command message = %q", m.message)
+	}
+}
+
+func TestTUILifecycleKeys(t *testing.T) {
+	var gotStop, gotRestart, gotClean task.TaskID
+	m := tuiModel{
+		list:    func() []task.Snapshot { return []task.Snapshot{{ID: "demo", State: task.StateRunning}} },
+		stop:    func(id task.TaskID) error { gotStop = id; return nil },
+		restart: func(id task.TaskID) error { gotRestart = id; return nil },
+		clean:   func(id task.TaskID) error { gotClean = id; return nil },
+		tasks:   []task.Snapshot{{ID: "demo", State: task.StateRunning}},
+	}
+	cases := []struct {
+		key  string
+		got  *task.TaskID
+		want string
+	}{
+		{"s", &gotStop, "stop demo"},
+		{"R", &gotRestart, "restart demo"},
+		{"c", &gotClean, "clean demo"},
+	}
+	for _, tc := range cases {
+		next, _ := m.Update(tea.KeyPressMsg{Code: rune(tc.key[0]), Text: tc.key})
+		m = next.(tuiModel)
+		if *tc.got != "demo" {
+			t.Fatalf("%q did not call the action", tc.key)
+		}
+		if m.message != tc.want {
+			t.Fatalf("%q message = %q, want %q", tc.key, m.message, tc.want)
+		}
+	}
+}
+
+func TestTUILifecycleKeysReportErrors(t *testing.T) {
+	m := tuiModel{
+		tasks: []task.Snapshot{{ID: "demo", State: task.StateRunning}},
+		stop:  func(task.TaskID) error { return errors.New("agent is stopping") },
+	}
+	next, _ := m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	m = next.(tuiModel)
+	if !strings.Contains(m.message, "stop demo:") {
+		t.Fatalf("error message = %q", m.message)
+	}
+	empty := tuiModel{}
+	next, _ = empty.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	if next.(tuiModel).message != "no task selected" {
+		t.Fatalf("empty selection message = %q", next.(tuiModel).message)
 	}
 }
 

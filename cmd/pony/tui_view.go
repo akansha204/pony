@@ -71,7 +71,7 @@ func renderTUI(m tuiModel) string {
 	}
 	if m.message != "" {
 		style := errorStyle
-		if strings.HasPrefix(m.message, "started ") {
+		if isSuccessMessage(m.message) {
 			style = successStyle
 		}
 		b.WriteString("\n" + style.Render(ansi.Truncate(safeText(m.message), contentWidth, "…")) + "\n")
@@ -79,9 +79,18 @@ func renderTUI(m tuiModel) string {
 	if m.editing {
 		b.WriteString("\n" + accentStyle.Render(":") + " " + ansi.Truncate(safeText(m.command), max(1, contentWidth-4), "…") + "\n")
 	} else {
-		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  j/k select  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
+		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
 	}
 	return b.String()
+}
+
+func isSuccessMessage(message string) bool {
+	for _, prefix := range []string{"started ", "stop ", "restart ", "clean "} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func visibleTasks(m tuiModel, compact, showWordmark bool) (int, int) {
