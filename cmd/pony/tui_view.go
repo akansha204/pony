@@ -40,6 +40,9 @@ func renderTUI(m tuiModel) string {
 		b.WriteString(wordmarkStyle.Render(ponyWordmark) + "\n")
 	}
 	fmt.Fprintf(&b, "%s  %s\n\n", accentStyle.Render("PONY"), mutedStyle.Render(fmt.Sprintf("tasks  %d", len(m.tasks))))
+	if m.updateNotice != "" {
+		b.WriteString(successStyle.Render(ansi.Truncate(m.updateNotice, contentWidth, "…")) + "\n\n")
+	}
 	if len(m.tasks) == 0 {
 		b.WriteString("No tasks in this session. Press : for a command, or ? for help.\n")
 	} else {
@@ -93,7 +96,7 @@ func renderTUI(m tuiModel) string {
 	if m.editing {
 		b.WriteString("\n" + accentStyle.Render(":") + " " + ansi.Truncate(safeText(m.command), max(1, contentWidth-4), "…") + "\n")
 	} else {
-		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": commands  •  ? help  •  p sessions  •  v validate  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
+		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": commands  •  ? help  •  u update  •  p sessions  •  v validate  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
 	}
 	return b.String()
 }
@@ -133,6 +136,7 @@ func renderTUIHelp(m tuiModel) string {
 		"  p           View agent session process status",
 		"  r           Refresh the task list",
 		"  q           Quit Pony (running agents are stopped)",
+		"  u           Install the latest tagged release when an update is available",
 		"",
 		"Configured checks must pass for verified; without checks the task becomes completed.",
 		"The same task controls are available as : stop ID, : restart ID, : clean ID, and : validate ID.",

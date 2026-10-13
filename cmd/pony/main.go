@@ -25,6 +25,13 @@ func main() {
 		fmt.Println("Pony " + currentVersion())
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "--update" {
+		if err := updatePonyCommand(); err != nil {
+			fmt.Fprintln(os.Stderr, "update:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	root, err := defaultWorkspaceRoot()
 	if err != nil {
@@ -43,7 +50,7 @@ func main() {
 		}
 	}()
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "--cli") {
-		fmt.Fprintln(os.Stderr, "usage: pony [--cli | --version]")
+		fmt.Fprintln(os.Stderr, "usage: pony [--cli | --version | --update]")
 		return
 	}
 	if len(os.Args) == 1 && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
@@ -335,9 +342,10 @@ General:
   help                         Show this guide
   quit                         Stop running agents and exit Pony
 
+To update, exit this CLI and run pony --update in your terminal.
 For the screen-based task list, run Pony without --cli in an interactive terminal.
-In the TUI, press ? for help, : to enter a run command, j/k or arrows to select,
-s to stop, R to restart, c to clean, r to refresh, and q to quit.`)
+In the TUI, press ? for help, : to enter a command, u to install an available update,
+j/k or arrows to select, s to stop, R to restart, c to clean, r to refresh, and q to quit.`)
 }
 
 type lineReader struct {

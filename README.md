@@ -31,6 +31,9 @@ go install github.com/akansha204/pony/cmd/pony@latest
 
 Then run `pony` to open the TUI, or `pony --cli` to open the CLI.
 Check the installed version with `pony --version`.
+Pony checks for a newer tagged release when the TUI opens; press `u` to install
+it. You can also run `pony --update` from a terminal. Restart Pony after an
+update to use the new version. These update checks need an internet connection.
 
 Go puts installed commands in `GOBIN` when it is set, otherwise in
 `GOPATH/bin` (usually `~/go/bin`). That directory must be on your shell's
@@ -71,9 +74,10 @@ run --id go-todo --goal "Build a simple in-memory todo backend in Go" --command 
 ```
 
 The initial TUI shows task status and details. Use `j`/`k` or the arrow
-keys to select a task, `r` to refresh, and `q` to quit. Other task
-actions are still in the CLI: start Pony with `pony --cli` (or
-`go run ./cmd/pony --cli`) to use commands such as:
+keys to select a task, `r` to refresh, and `q` to quit. Press `?` to see
+the full guide. Press `:` to enter task or agent-session commands, including
+`start`, `send`, `read`, `attach`, `resize`, and `status`. Use the CLI with
+`pony --cli` (or `go run ./cmd/pony --cli`) for the same commands:
 
 ```text
 pony> run --id go-todo --goal "Build a simple in-memory todo backend in Go" --command codex

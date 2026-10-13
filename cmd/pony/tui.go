@@ -31,27 +31,44 @@ type agentReadMsg struct {
 	err error
 }
 
+type updateCheckMsg struct {
+	version   string
+	available bool
+	err       error
+}
+
+type updateInstallMsg struct {
+	version string
+	err     error
+}
+
 type tuiModel struct {
-	list         func() []task.Snapshot
-	run          func(runOptions) error
-	stop         func(task.TaskID) error
-	restart      func(task.TaskID) error
-	clean        func(task.TaskID) error
-	validate     func(task.TaskID) (task.Snapshot, []validation.Result, error)
-	sessions     func() []agent.SessionSnapshot
-	agentsAPI    *agent.Manager
-	tasks        []task.Snapshot
-	agents       []agent.SessionSnapshot
-	selected     int
-	width        int
-	height       int
-	editing      bool
-	command      string
-	message      string
-	showHelp     bool
-	showSessions bool
-	attachID     agent.AgentID
-	agentOutput  string
+	list             func() []task.Snapshot
+	run              func(runOptions) error
+	stop             func(task.TaskID) error
+	restart          func(task.TaskID) error
+	clean            func(task.TaskID) error
+	validate         func(task.TaskID) (task.Snapshot, []validation.Result, error)
+	sessions         func() []agent.SessionSnapshot
+	agentsAPI        *agent.Manager
+	tasks            []task.Snapshot
+	agents           []agent.SessionSnapshot
+	selected         int
+	width            int
+	height           int
+	editing          bool
+	command          string
+	message          string
+	showHelp         bool
+	showSessions     bool
+	attachID         agent.AgentID
+	agentOutput      string
+	updateCheckDone  bool
+	updateReady      bool
+	updateInstalling bool
+	updateVer        string
+	updateNotice     string
+	updateFailed     bool
 }
 
 func newTUIModel(a *app) tuiModel {
@@ -79,7 +96,14 @@ func newTUIModel(a *app) tuiModel {
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return scheduleRefresh()
+	return tea.Batch(scheduleRefresh(), checkForUpdate())
+}
+
+func checkForUpdate() tea.Cmd {
+	return func() tea.Msg {
+		version, available, err := updateCheckMessage()
+		return updateCheckMsg{version: version, available: available, err: err}
+	}
 }
 
 func scheduleRefresh() tea.Cmd {
@@ -154,6 +178,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applySelected("clean", m.clean)
 		case "v":
 			return m, m.validateSelected()
+		case "u":
+			return m, m.startUpdate()
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -186,6 +212,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.message = "read " + string(msg.id)
 			m.agentOutput = msg.out
+		}
+	case updateCheckMsg:
+		m.updateCheckDone = true
+		m.updateFailed = msg.err != nil
+		m.updateReady = msg.err == nil && msg.available
+		if msg.err == nil && msg.available {
+			m.updateVer = msg.version
+			m.updateNotice = "Pony " + msg.version + " is available — press u to update"
+		} else if msg.err == nil {
+			m.updateNotice = ""
+		}
+	case updateInstallMsg:
+		m.updateInstalling = false
+		if msg.err != nil {
+			m.message = "update: " + msg.err.Error()
+			m.updateNotice = "Pony update failed"
+		} else {
+			m.updateReady = false
+			m.updateNotice = "Pony " + msg.version + " installed — restart Pony to use the update"
 		}
 	}
 	return m, nil
@@ -399,6 +444,32 @@ func (m *tuiModel) submit() tea.Cmd {
 func (m *tuiModel) refreshAgents() {
 	if m.sessions != nil {
 		m.agents = m.sessions()
+	}
+}
+
+func (m *tuiModel) startUpdate() tea.Cmd {
+	if m.updateInstalling {
+		m.message = "Pony update is already installing"
+		return nil
+	}
+	if !m.updateCheckDone {
+		m.message = "checking for updates..."
+		return checkForUpdate()
+	}
+	if m.updateFailed {
+		m.message = "update check failed; check your internet connection and try again"
+		m.updateCheckDone = false
+		return checkForUpdate()
+	}
+	if !m.updateReady {
+		m.message = "no newer release is available"
+		return nil
+	}
+	version := m.updateVer
+	m.updateInstalling = true
+	m.updateNotice = "installing Pony " + version + "..."
+	return func() tea.Msg {
+		return updateInstallMsg{version: version, err: updatePonyVersion(version)}
 	}
 }
 
