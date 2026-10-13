@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,10 +15,29 @@ import (
 	"time"
 
 	"github.com/akansha204/pony/internal/agent"
+	"github.com/akansha204/pony/internal/driver"
 	"github.com/akansha204/pony/internal/event"
 	"github.com/akansha204/pony/internal/task"
 	"github.com/akansha204/pony/internal/validation"
+	"github.com/akansha204/pony/internal/workspace"
 )
+
+type goalWriteFailDriver struct {
+	driver.Driver
+	writeErr error
+	stopErr  error
+}
+
+func (d *goalWriteFailDriver) Write(_ *driver.Handle, _ []byte) (int, error) {
+	return 0, d.writeErr
+}
+
+func (d *goalWriteFailDriver) Stop(ctx context.Context, h *driver.Handle) error {
+	if d.stopErr != nil {
+		return d.stopErr
+	}
+	return d.Driver.Stop(ctx, h)
+}
 
 func cliRepository(t *testing.T) string {
 	t.Helper()
@@ -148,6 +169,58 @@ func TestRunCrashSkipsValidation(t *testing.T) {
 		if recorded.Type == event.ValidationStarted {
 			t.Fatal("validation ran after agent crash")
 		}
+	}
+}
+
+func TestRunReportsGoalAndCleanupFailuresWithRecoverySteps(t *testing.T) {
+	repo := cliRepository(t)
+	workspaces, err := workspace.NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeErr := errors.New("input pipe failed")
+	stopErr := errors.New("stop failed")
+	failingDriver := &goalWriteFailDriver{Driver: driver.NewPTYDriver(), writeErr: writeErr, stopErr: stopErr}
+	agents := agent.NewManager(failingDriver)
+	events := event.NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &app{
+		agents: agents, workspaces: workspaces, tasks: task.NewManager(workspaces, agents, events),
+		events: events, ctx: ctx, cancel: cancel, runs: make(map[task.TaskID]*runState),
+	}
+	t.Cleanup(func() {
+		failingDriver.stopErr = nil
+		_ = a.shutdown()
+		_ = workspaces.Release(repo, "ws-goal-failure")
+		cancel()
+	})
+
+	snapshot, err := a.run(runOptions{
+		id: "goal-failure", goal: "do the work", repo: repo, baseRef: "HEAD",
+		command: "sleep", args: []string{"1000"},
+	})
+	if !errors.Is(err, writeErr) || !errors.Is(err, stopErr) {
+		t.Fatalf("run error = %v, want both goal-write and stop errors", err)
+	}
+	for _, recovery := range []string{"list", "stop goal-failure", "clean goal-failure"} {
+		if !strings.Contains(err.Error(), recovery) {
+			t.Fatalf("run error %q does not explain recovery step %q", err, recovery)
+		}
+	}
+	if snapshot.SessionID == "" || snapshot.WorkspacePath == "" {
+		t.Fatalf("run did not return the allocated task for recovery: %+v", snapshot)
+	}
+	stored, ok := a.tasks.Get("goal-failure")
+	if !ok || stored.State != task.StateRunning {
+		t.Fatalf("task after failed stop = %+v, found = %t", stored, ok)
+	}
+
+	failingDriver.stopErr = nil
+	if _, err := a.stop("goal-failure"); err != nil {
+		t.Fatalf("recover with stop: %v", err)
+	}
+	if err := a.clean("goal-failure"); err != nil {
+		t.Fatalf("recover with clean: %v", err)
 	}
 }
 

@@ -127,7 +127,14 @@ func (a *app) run(opts runOptions) (task.Snapshot, error) {
 	startErr := err
 	if _, err := a.agents.Write(agent.AgentID(opts.id), []byte(opts.goal+"\n")); err != nil {
 		_, stopErr := a.tasks.Stop(opts.id)
-		return started, errors.Join(fmt.Errorf("send goal to task %q: %w", opts.id, err), startErr, stopErr)
+		goalErr := fmt.Errorf(
+			"send goal to task %q: %w; task remains allocated; use `list` to inspect it, `stop %s` if it is still running, and `clean %s` after it stops",
+			opts.id,
+			err,
+			opts.id,
+			opts.id,
+		)
+		return started, errors.Join(goalErr, startErr, stopErr)
 	}
 	a.mu.Lock()
 	a.runs[opts.id] = &runState{steps: opts.steps}
