@@ -119,6 +119,7 @@ func renderTUIHelp(m tuiModel) string {
 		"Agent session commands (enter them after pressing :)",
 		"  start ID CMD [args...]     Start a separate agent process",
 		"  send ID TEXT              Send a line to an agent",
+		"  prompt ID TEXT            Submit a prompt (optional: --wait idle|blocked|done)",
 		"  read ID                   Show recent agent output",
 		"  attach ID                 Use the agent in this terminal; Ctrl+\\ returns here",
 		"  resize ID ROWS COLS       Change the agent terminal size",

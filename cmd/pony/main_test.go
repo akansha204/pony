@@ -89,6 +89,40 @@ func TestLineReaderOnEmptyInput(t *testing.T) {
 	}
 }
 
+func TestParsePromptOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+		id     string
+		text   string
+		state  string
+		bad    bool
+	}{
+		{name: "plain prompt", fields: []string{"agent", "explain", "this repo"}, id: "agent", text: "explain this repo"},
+		{name: "wait for idle", fields: []string{"agent", "--wait", "idle", "explain", "this repo"}, id: "agent", text: "explain this repo", state: "idle"},
+		{name: "missing text", fields: []string{"agent"}, bad: true},
+		{name: "unsupported wait state", fields: []string{"agent", "--wait", "working", "explain"}, bad: true},
+		{name: "unknown option", fields: []string{"agent", "--fast", "explain"}, bad: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePrompt(tc.fields)
+			if tc.bad {
+				if err == nil {
+					t.Fatalf("parsePrompt(%v) succeeded, want error", tc.fields)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parsePrompt: %v", err)
+			}
+			if string(got.id) != tc.id || got.text != tc.text || string(got.waitFor) != tc.state {
+				t.Fatalf("parsePrompt = %+v", got)
+			}
+		})
+	}
+}
+
 func TestLineReaderHandlesBlankLines(t *testing.T) {
 	r := newLineReader(tempFileWith(t, "\n\none\n"))
 

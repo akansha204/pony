@@ -14,6 +14,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/akansha204/pony/internal/agent"
+	"github.com/akansha204/pony/internal/driver"
 	"github.com/akansha204/pony/internal/task"
 	"github.com/akansha204/pony/internal/validation"
 )
@@ -40,7 +41,7 @@ func TestTUIHelpKeyAndCommand(t *testing.T) {
 	m := tuiModel{}
 	next, _ := m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
 	m = next.(tuiModel)
-	if !m.showHelp || !strings.Contains(ansi.Strip(m.View().Content), "Start a task") {
+	if !m.showHelp || !strings.Contains(ansi.Strip(m.View().Content), "Start a task") || !strings.Contains(ansi.Strip(m.View().Content), "prompt ID TEXT") {
 		t.Fatalf("help key did not show help: %+v", m)
 	}
 	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -52,6 +53,20 @@ func TestTUIHelpKeyAndCommand(t *testing.T) {
 	m.submit()
 	if !m.showHelp {
 		t.Fatal("help command did not show help")
+	}
+}
+
+func TestTUIPromptCommandRunsAsynchronously(t *testing.T) {
+	m := tuiModel{agentsAPI: agent.NewManager(driver.NewProcessDriver())}
+	m.command = `prompt demo --wait idle "explain this repository"`
+	cmd := m.submit()
+	if cmd == nil || !m.actionPending || m.message != "prompting demo..." {
+		t.Fatalf("submit returned cmd=%t pending=%t message=%q", cmd != nil, m.actionPending, m.message)
+	}
+	next, _ := m.Update(agentPromptMsg{id: "demo", state: agent.AgentStateIdle, waitFor: agent.AgentStateIdle})
+	m = next.(tuiModel)
+	if m.actionPending || m.message != "demo reached idle" {
+		t.Fatalf("completed prompt pending=%t message=%q", m.actionPending, m.message)
 	}
 }
 

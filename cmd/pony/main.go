@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -255,6 +256,23 @@ func main() {
 			}
 			fmt.Printf("sent %s: %s\n", id, text)
 
+		case "prompt":
+			opts, err := parsePrompt(fields[1:])
+			if err != nil {
+				fmt.Println("prompt:", err)
+				continue
+			}
+			state, err := mgr.Prompt(context.Background(), opts.id, opts.text, opts.waitFor, 0)
+			if err != nil {
+				fmt.Println("prompt:", err)
+				continue
+			}
+			if opts.waitFor == "" {
+				fmt.Printf("prompt sent to %s\n", opts.id)
+			} else {
+				fmt.Printf("%s reached %s\n", opts.id, state)
+			}
+
 		case "read":
 			if len(fields) != 2 {
 				fmt.Println("usage: read <id>")
@@ -357,6 +375,8 @@ Task commands:
 Agent session commands:
   start <id> <cmd> [args...]   Start a named interactive program session
   send <id> <text>             Send text followed by Enter
+  prompt <id> <text>           Send a prompt followed by Enter
+  prompt <id> --wait STATE TEXT  Send a prompt and wait (idle, blocked, done; 2m timeout)
   read <id>                    Show buffered terminal output
   screen <id>                  Show the latest modeled terminal screen
   attach <id>                  Type directly into a running session; Ctrl+\\ detaches
@@ -376,6 +396,37 @@ j/k or arrows to select, s to stop, R to restart, c to clean, r to refresh, and 
 
 type lineReader struct {
 	in *os.File
+}
+
+type promptOptions struct {
+	id      agent.AgentID
+	text    string
+	waitFor agent.AgentState
+}
+
+func parsePrompt(fields []string) (promptOptions, error) {
+	if len(fields) < 2 {
+		return promptOptions{}, fmt.Errorf("usage: prompt <id> [--wait idle|blocked|done] <text>")
+	}
+	opts := promptOptions{id: agent.AgentID(fields[0])}
+	textStart := 1
+	if fields[1] == "--wait" {
+		if len(fields) < 4 {
+			return promptOptions{}, fmt.Errorf("usage: prompt <id> --wait idle|blocked|done <text>")
+		}
+		opts.waitFor = agent.AgentState(fields[2])
+		if opts.waitFor != agent.AgentStateIdle && opts.waitFor != agent.AgentStateBlocked && opts.waitFor != agent.AgentStateDone {
+			return promptOptions{}, fmt.Errorf("wait state must be idle, blocked, or done")
+		}
+		textStart = 3
+	} else if strings.HasPrefix(fields[1], "--") {
+		return promptOptions{}, fmt.Errorf("unknown prompt option %q", fields[1])
+	}
+	opts.text = strings.Join(fields[textStart:], " ")
+	if strings.TrimSpace(opts.text) == "" {
+		return promptOptions{}, fmt.Errorf("prompt text must not be empty")
+	}
+	return opts, nil
 }
 
 func newLineReader(in *os.File) *lineReader {

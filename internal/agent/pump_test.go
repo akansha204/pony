@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,179 @@ type burstScreenDriver struct {
 	done      chan struct{}
 	once      sync.Once
 }
+
+type promptTestDriver struct {
+	mu       sync.Mutex
+	writes   [][]byte
+	output   chan []byte
+	done     chan struct{}
+	stopOnce sync.Once
+	onSubmit func()
+}
+
+func newPromptTestDriver() *promptTestDriver {
+	return &promptTestDriver{output: make(chan []byte, 8), done: make(chan struct{})}
+}
+
+func (d *promptTestDriver) Start(context.Context, driver.Spec) (*driver.Handle, error) {
+	return &driver.Handle{PID: 123}, nil
+}
+
+func (d *promptTestDriver) Write(_ *driver.Handle, data []byte) (int, error) {
+	d.mu.Lock()
+	d.writes = append(d.writes, append([]byte(nil), data...))
+	onSubmit := d.onSubmit
+	d.mu.Unlock()
+	if string(data) == "\n" && onSubmit != nil {
+		onSubmit()
+	}
+	return len(data), nil
+}
+
+func (d *promptTestDriver) Read(_ *driver.Handle, p []byte) (int, error) {
+	select {
+	case data := <-d.output:
+		return copy(p, data), nil
+	case <-d.done:
+		return 0, io.EOF
+	}
+}
+
+func (d *promptTestDriver) ReadTimeout(h *driver.Handle, p []byte, _ time.Duration) (int, error) {
+	return d.Read(h, p)
+}
+
+func (d *promptTestDriver) Resize(*driver.Handle, uint16, uint16) error { return nil }
+
+func (d *promptTestDriver) Stop(context.Context, *driver.Handle) error {
+	d.stopOnce.Do(func() { close(d.done) })
+	return nil
+}
+
+func (d *promptTestDriver) Wait(*driver.Handle) driver.ExitResult {
+	<-d.done
+	return driver.ExitResult{}
+}
+
+func (d *promptTestDriver) recordedWrites() [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	writes := make([][]byte, len(d.writes))
+	for i := range d.writes {
+		writes[i] = append([]byte(nil), d.writes[i]...)
+	}
+	return writes
+}
+
+func promptManager(t *testing.T, d *promptTestDriver) *Manager {
+	t.Helper()
+	t.Setenv("PONY_AGENT_PROFILES", filepath.Join("..", "..", "profiles", "agents"))
+	m := NewManager(d)
+	spec := AgentSpec{ID: "test", Command: "scripted"}
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+	return m
+}
+
+func TestPromptSubmitsTextAndExactlyOneEnter(t *testing.T) {
+	d := newPromptTestDriver()
+	m := promptManager(t, d)
+	if _, err := m.Prompt(context.Background(), "test", "explain this", "", 0); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	writes := d.recordedWrites()
+	if len(writes) != 2 || string(writes[0]) != "explain this" || string(writes[1]) != "\n" {
+		t.Fatalf("writes = %q, want prompt text then one Enter", writes)
+	}
+}
+
+func TestPromptUsesBracketedPasteAndSubmitsOnce(t *testing.T) {
+	d := newPromptTestDriver()
+	m := promptManager(t, d)
+	m.mu.Lock()
+	m.agents["test"].session.screen.Feed([]byte("\x1b[?2004h"))
+	m.mu.Unlock()
+	if _, err := m.Prompt(context.Background(), "test", "line one\nline two", "", 0); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	writes := d.recordedWrites()
+	want := "\x1b[200~line one\nline two\x1b[201~"
+	if len(writes) != 2 || string(writes[0]) != want || string(writes[1]) != "\n" {
+		t.Fatalf("writes = %q, want bracketed paste and one Enter", writes)
+	}
+}
+
+func TestPromptWaitsForWorkingThenIdle(t *testing.T) {
+	d := newPromptTestDriver()
+	m := promptManager(t, d)
+	m.mu.Lock()
+	m.agents["test"].session.agentKind = AgentKindCodex
+	m.mu.Unlock()
+	d.onSubmit = func() {
+		go func() {
+			d.output <- []byte("Thinking...\r\n")
+			time.Sleep(750 * time.Millisecond)
+			d.output <- []byte("\x1b[2J\x1b[H❯")
+		}()
+	}
+	state, err := m.Prompt(context.Background(), "test", "do work", AgentStateIdle, 3*time.Second)
+	if err != nil {
+		t.Fatalf("Prompt wait: %v", err)
+	}
+	if state != AgentStateIdle {
+		t.Fatalf("returned state = %q, want idle", state)
+	}
+}
+
+func TestPromptWaitTimesOutWithoutResubmitting(t *testing.T) {
+	d := newPromptTestDriver()
+	m := promptManager(t, d)
+	_, err := m.Prompt(context.Background(), "test", "do work", AgentStateIdle, 120*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Prompt error = %v, want timeout", err)
+	}
+	writes := d.recordedWrites()
+	if len(writes) != 2 {
+		t.Fatalf("Prompt wrote %d times, want text and one Enter only: %q", len(writes), writes)
+	}
+}
+
+func TestPromptWaitReturnsWhenAgentExits(t *testing.T) {
+	d := newPromptTestDriver()
+	d.onSubmit = func() { d.stopOnce.Do(func() { close(d.done) }) }
+	m := promptManager(t, d)
+	_, err := m.Prompt(context.Background(), "test", "do work", AgentStateIdle, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exited") {
+		t.Fatalf("Prompt error = %v, want process exit", err)
+	}
+}
+
+func TestPromptRejectsNonRunningSession(t *testing.T) {
+	d := newPromptTestDriver()
+	m := promptManager(t, d)
+	if err := m.Stop("test"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := m.Prompt(context.Background(), "test", "do work", "", 0); err == nil {
+		t.Fatal("Prompt succeeded for a stopped session")
+	}
+}
+
+func TestPromptWaitRejectsUnsupportedTarget(t *testing.T) {
+	d := newPromptTestDriver()
+	m := promptManager(t, d)
+	_, err := m.Prompt(context.Background(), "test", "do work", "working", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "wait state") {
+		t.Fatalf("Prompt error = %v, want invalid wait state", err)
+	}
+	if writes := d.recordedWrites(); len(writes) != 0 {
+		t.Fatalf("invalid wait state wrote to process: %q", writes)
+	}
+}
+
+var _ driver.Driver = (*promptTestDriver)(nil)
 
 func (d *burstScreenDriver) Start(context.Context, driver.Spec) (*driver.Handle, error) {
 	return &driver.Handle{PID: 1}, nil

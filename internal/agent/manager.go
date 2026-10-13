@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,7 @@ type Manager struct {
 const stopSettle = 2 * time.Second
 const identityRefreshInterval = 500 * time.Millisecond
 const stateRefreshInterval = 500 * time.Millisecond
+const defaultPromptWaitTimeout = 2 * time.Minute
 
 type foregroundGroupReader interface {
 	ForegroundProcessGroup(*driver.Handle) (int, error)
@@ -287,8 +289,17 @@ func (m *Manager) runningHandle(id AgentID) *driver.Handle {
 }
 
 func (m *Manager) Write(id AgentID, data []byte) (int, error) {
+	return m.writeToSession(id, nil, data)
+}
+
+func (m *Manager) writeToSession(id AgentID, expected *session, data []byte) (int, error) {
 	m.mu.Lock()
-	h := m.runningHandle(id)
+	a := m.agents[id]
+	if a == nil || a.session == nil || a.session.State != StateRunning || (expected != nil && a.session != expected) {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("agent %q has no running session", id)
+	}
+	h := a.session.h
 	m.mu.Unlock()
 	if h == nil {
 		return 0, fmt.Errorf("agent %q has no running session", id)
@@ -298,6 +309,99 @@ func (m *Manager) Write(id AgentID, data []byte) (int, error) {
 		return n, fmt.Errorf("write to agent %q: %w", id, err)
 	}
 	return n, nil
+}
+
+// Prompt submits one line of input to a running session. If the terminal has
+// bracketed paste enabled, the text is wrapped in its paste markers before a
+// separate Enter is sent. A requested state wait observes Working before it
+// accepts the requested settled state, so an old idle screen cannot satisfy it.
+func (m *Manager) Prompt(ctx context.Context, id AgentID, text string, waitFor AgentState, timeout time.Duration) (AgentState, error) {
+	if strings.TrimSpace(text) == "" {
+		return AgentStateUnknown, fmt.Errorf("prompt text must not be empty")
+	}
+	if waitFor != "" && waitFor != AgentStateIdle && waitFor != AgentStateBlocked && waitFor != AgentStateDone {
+		return AgentStateUnknown, fmt.Errorf("prompt wait state must be idle, blocked, or done")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	m.mu.Lock()
+	a := m.agents[id]
+	if a == nil || a.session == nil || a.session.State != StateRunning || a.session.h == nil {
+		m.mu.Unlock()
+		return AgentStateUnknown, fmt.Errorf("agent %q has no running session", id)
+	}
+	s := a.session
+	screenModel := s.screen
+	m.mu.Unlock()
+
+	payload := []byte(text)
+	if screenModel != nil && screenModel.Snapshot().BracketedPaste {
+		payload = append([]byte("\x1b[200~"), payload...)
+		payload = append(payload, []byte("\x1b[201~")...)
+	}
+	if n, err := m.writeToSession(id, s, payload); err != nil {
+		return AgentStateUnknown, fmt.Errorf("send prompt to agent %q: %w", id, err)
+	} else if n != len(payload) {
+		return AgentStateUnknown, fmt.Errorf("send prompt to agent %q: short write (%d of %d bytes)", id, n, len(payload))
+	}
+	if n, err := m.writeToSession(id, s, []byte("\n")); err != nil {
+		return AgentStateUnknown, fmt.Errorf("submit prompt to agent %q: %w", id, err)
+	} else if n != 1 {
+		return AgentStateUnknown, fmt.Errorf("submit prompt to agent %q: short write (%d of 1 byte)", id, n)
+	}
+
+	if waitFor == "" {
+		return AgentStateUnknown, nil
+	}
+	m.mu.Lock()
+	if a.session == s {
+		s.stateCheckedAt = time.Time{}
+	}
+	m.mu.Unlock()
+
+	if timeout <= 0 {
+		timeout = defaultPromptWaitTimeout
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	sawWorking := false
+	lastState := AgentStateUnknown
+	for {
+		m.mu.Lock()
+		current := m.agents[id]
+		sameSession := current != nil && current.session == s
+		m.mu.Unlock()
+		if !sameSession {
+			return lastState, fmt.Errorf("agent %q session changed while waiting for state %q", id, waitFor)
+		}
+		for _, snapshot := range m.Snapshots() {
+			if snapshot.AgentID != id {
+				continue
+			}
+			lastState = snapshot.AgentState
+			if snapshot.State != StateRunning {
+				return lastState, fmt.Errorf("agent %q exited while waiting for state %q", id, waitFor)
+			}
+			if snapshot.AgentState == AgentStateWorking {
+				sawWorking = true
+			}
+			if sawWorking && snapshot.AgentState == waitFor {
+				return snapshot.AgentState, nil
+			}
+		}
+		select {
+		case <-waitCtx.Done():
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				return lastState, fmt.Errorf("timed out waiting for agent %q to reach %q (last state %q)", id, waitFor, lastState)
+			}
+			return lastState, fmt.Errorf("waiting for agent %q to reach %q: %w", id, waitFor, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (m *Manager) Read(id AgentID, p []byte) (int, error) {

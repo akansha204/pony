@@ -29,31 +29,33 @@ type buffer struct {
 // Snapshot is a point-in-time copy of the visible screen and its bounded
 // scrollback. Reliable is false if the observer queue dropped terminal bytes.
 type Snapshot struct {
-	Rows         int
-	Columns      int
-	CursorRow    int
-	CursorColumn int
-	Visible      []string
-	Scrollback   []string
-	Text         string
-	DroppedBytes uint64
-	Reliable     bool
+	Rows           int
+	Columns        int
+	CursorRow      int
+	CursorColumn   int
+	Visible        []string
+	Scrollback     []string
+	Text           string
+	DroppedBytes   uint64
+	Reliable       bool
+	BracketedPaste bool
 }
 
 // Model parses a useful subset of terminal control sequences into a bounded grid.
 type Model struct {
-	mu            sync.Mutex
-	rows          int
-	cols          int
-	maxScrollback int
-	main          buffer
-	alt           buffer
-	useAlt        bool
-	state         byte
-	sequence      []byte
-	oscEsc        bool
-	pending       []byte
-	dropped       atomic.Uint64
+	mu             sync.Mutex
+	rows           int
+	cols           int
+	maxScrollback  int
+	main           buffer
+	alt            buffer
+	useAlt         bool
+	bracketedPaste bool
+	state          byte
+	sequence       []byte
+	oscEsc         bool
+	pending        []byte
+	dropped        atomic.Uint64
 }
 
 // New creates a screen with fixed dimensions and a bounded main-screen scrollback.
@@ -259,7 +261,7 @@ func (m *Model) Snapshot() Snapshot {
 	return Snapshot{
 		Rows: m.rows, Columns: m.cols, CursorRow: b.row, CursorColumn: b.col,
 		Visible: visible, Scrollback: back, Text: strings.Join(visible, "\n"),
-		DroppedBytes: dropped, Reliable: dropped == 0,
+		DroppedBytes: dropped, Reliable: dropped == 0, BracketedPaste: m.bracketedPaste,
 	}
 }
 
@@ -362,6 +364,9 @@ func (m *Model) handleCSI(final byte, raw []byte) {
 	case 'h', 'l':
 		if private {
 			for _, mode := range params {
+				if mode == 2004 {
+					m.bracketedPaste = final == 'h'
+				}
 				if mode == 1049 || mode == 47 || mode == 1047 {
 					if final == 'h' {
 						m.enterAlt()

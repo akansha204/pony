@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,13 @@ type agentReadMsg struct {
 	id      agent.AgentID
 	out     string
 	dropped uint64
+	err     error
+}
+
+type agentPromptMsg struct {
+	id      agent.AgentID
+	state   agent.AgentState
+	waitFor agent.AgentState
 	err     error
 }
 
@@ -238,6 +246,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.agentOutput = msg.out
 		}
+	case agentPromptMsg:
+		m.actionPending = false
+		if msg.err != nil {
+			m.message = "prompt " + string(msg.id) + ": " + msg.err.Error()
+		} else if msg.waitFor == "" {
+			m.message = "prompt sent to " + string(msg.id)
+		} else {
+			m.message = string(msg.id) + " reached " + string(msg.state)
+		}
+		m.refreshAgents()
 	case updateCheckMsg:
 		m.updateCheckDone = true
 		m.updateFailed = msg.err != nil
@@ -364,6 +382,24 @@ func (m *tuiModel) submit() tea.Cmd {
 					m.message = "send: " + err.Error()
 				} else {
 					m.message = "sent " + fields[1] + ": " + text
+				}
+			}
+		case "prompt":
+			var opts promptOptions
+			opts, err = parsePrompt(fields[1:])
+			if err != nil {
+				m.message = "prompt: " + err.Error()
+			} else if m.agentsAPI == nil {
+				m.message = "prompt: not available"
+			} else if m.actionPending {
+				m.message = "another action is still running"
+			} else {
+				agents := m.agentsAPI
+				m.actionPending = true
+				m.message = "prompting " + string(opts.id) + "..."
+				cmd = func() tea.Msg {
+					state, err := agents.Prompt(context.Background(), opts.id, opts.text, opts.waitFor, 0)
+					return agentPromptMsg{id: opts.id, state: state, waitFor: opts.waitFor, err: err}
 				}
 			}
 		case "read":

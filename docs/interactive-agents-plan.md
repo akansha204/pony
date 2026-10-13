@@ -1,6 +1,6 @@
 # Pony — Interactive Agents + State From Output (Plan)
 
-> **Status:** Phases 1–4 implemented; later phases planned.
+> **Status:** Phases 1–5 implemented; later phases planned.
 > This is a follow-on plan, not part of [v1-plan.md](./v1-plan.md).
 
 > Build Pony one systems problem at a time.
@@ -307,12 +307,14 @@ it, and optionally wait for the agent to settle.
 
 ### Build
 
--   `prompt <id> <text>` — write text, then submit Enter, honoring the
-    terminal's live bracketed-paste mode. Reuse the existing `send`
-    path rather than adding a second writer.
--   `prompt <id> --wait <state> <text>` — submit and block until the
-    agent reaches a settled state (`idle`/`done`/`blocked`) or a
-    timeout expires.
+-   `prompt <id> <text>` — write text, then submit one Enter, honoring
+    the terminal's live bracketed-paste mode. Reuse the existing PTY
+    write path rather than adding a second writer.
+-   `prompt <id> --wait <state> <text>` — submit and wait until Pony has
+    observed `working` and then reaches the requested settled state
+    (`idle`/`done`/`blocked`). The default timeout is two minutes.
+-   In the TUI the wait runs in the background, so navigation and refresh
+    remain responsive while the prompt is running.
 
 ``` text
 prompt  ──►  submit text+Enter  ──►  observe working  ──►  wait for settle
@@ -328,10 +330,11 @@ prompt  ──►  submit text+Enter  ──►  observe working  ──►  wai
 
 ### Tests
 
--   [ ] Submit reaches a scripted reader as text + a single Enter.
--   [ ] A bracketed-paste prompt is submitted once.
--   [ ] `--wait idle` returns when the scripted agent goes idle.
--   [ ] Timeout returns without writing again and without hanging.
+-   [x] Submit reaches a scripted reader as text + a single Enter.
+-   [x] A bracketed-paste prompt is submitted once.
+-   [x] `--wait idle` returns when the scripted agent goes idle.
+-   [x] Timeout returns without writing again and without hanging.
+-   [x] Agent exit terminates a pending state wait.
 
 ### Done when
 

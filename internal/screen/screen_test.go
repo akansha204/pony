@@ -53,6 +53,18 @@ func TestDroppedObserverInputMarksSnapshotIncomplete(t *testing.T) {
 	}
 }
 
+func TestBracketedPasteModeTracksTerminalControls(t *testing.T) {
+	m := New(2, 12, 4)
+	m.Feed([]byte("\x1b[?2004h"))
+	if !m.Snapshot().BracketedPaste {
+		t.Fatal("bracketed paste mode should be enabled")
+	}
+	m.Feed([]byte("\x1b[?2004l"))
+	if m.Snapshot().BracketedPaste {
+		t.Fatal("bracketed paste mode should be disabled")
+	}
+}
+
 func TestResizeAndSplitUTF8(t *testing.T) {
 	m := New(2, 4, 2)
 	m.Feed([]byte("hi ☃"[:4]))
