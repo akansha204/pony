@@ -1,31 +1,44 @@
 package main
 
 import (
+	"fmt"
 	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/shell_lexer"
 	"github.com/akansha204/pony/internal/task"
+	"github.com/akansha204/pony/internal/validation"
 )
 
 type refreshMsg struct{}
 
+type validationMsg struct {
+	snapshot task.Snapshot
+	results  []validation.Result
+	err      error
+}
+
 type tuiModel struct {
-	list     func() []task.Snapshot
-	run      func(runOptions) error
-	stop     func(task.TaskID) error
-	restart  func(task.TaskID) error
-	clean    func(task.TaskID) error
-	tasks    []task.Snapshot
-	selected int
-	width    int
-	height   int
-	editing  bool
-	command  string
-	message  string
-	showHelp bool
+	list         func() []task.Snapshot
+	run          func(runOptions) error
+	stop         func(task.TaskID) error
+	restart      func(task.TaskID) error
+	clean        func(task.TaskID) error
+	validate     func(task.TaskID) (task.Snapshot, []validation.Result, error)
+	sessions     func() []agent.SessionSnapshot
+	tasks        []task.Snapshot
+	agents       []agent.SessionSnapshot
+	selected     int
+	width        int
+	height       int
+	editing      bool
+	command      string
+	message      string
+	showHelp     bool
+	showSessions bool
 }
 
 func newTUIModel(a *app) tuiModel {
@@ -43,8 +56,11 @@ func newTUIModel(a *app) tuiModel {
 			_, err := a.restart(id)
 			return err
 		},
-		clean: a.clean,
-		tasks: a.tasks.List(),
+		clean:    a.clean,
+		validate: a.validate,
+		sessions: a.agents.Snapshots,
+		tasks:    a.tasks.List(),
+		agents:   a.agents.Snapshots(),
 	}
 }
 
@@ -63,6 +79,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "?", "esc", "q", "enter":
 				m.showHelp = false
+			}
+			return m, nil
+		}
+		if m.showSessions {
+			switch msg.String() {
+			case "p", "esc", "q", "enter":
+				m.showSessions = false
 			}
 			return m, nil
 		}
@@ -93,6 +116,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = ""
 		case "?":
 			m.showHelp = true
+		case "p":
+			m.showSessions = !m.showSessions
+			if m.sessions != nil {
+				m.agents = m.sessions()
+			}
 		case "j", "down":
 			if m.selected+1 < len(m.tasks) {
 				m.selected++
@@ -109,14 +137,50 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applySelected("restart", m.restart)
 		case "c":
 			m.applySelected("clean", m.clean)
+		case "v":
+			return m, m.validateSelected()
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case refreshMsg:
 		m.reload()
+		if m.sessions != nil {
+			m.agents = m.sessions()
+		}
 		return m, scheduleRefresh()
+	case validationMsg:
+		m.reload()
+		if msg.err != nil {
+			m.message = "validate " + string(msg.snapshot.ID) + ": " + msg.err.Error()
+		} else {
+			m.message = fmt.Sprintf("validate %s: %s", msg.snapshot.ID, msg.snapshot.State)
+			for i, result := range msg.results {
+				m.message += fmt.Sprintf("; check %d exit=%d", i+1, result.ExitCode)
+				if result.TimedOut {
+					m.message += " timed out"
+				}
+			}
+		}
 	}
 	return m, nil
+}
+
+func (m *tuiModel) validateSelected() tea.Cmd {
+	if len(m.tasks) == 0 {
+		m.message = "no task selected"
+		return nil
+	}
+	if m.validate == nil {
+		m.message = "validate: not available"
+		return nil
+	}
+	id := m.tasks[m.selected].ID
+	m.message = "validating " + string(id) + "..."
+	validate := m.validate
+	return func() tea.Msg {
+		snapshot, results, err := validate(id)
+		return validationMsg{snapshot: snapshot, results: results, err: err}
+	}
 }
 
 func (m *tuiModel) applySelected(action string, fn func(task.TaskID) error) {
@@ -184,6 +248,8 @@ func (m tuiModel) View() tea.View {
 	content := renderTUI(m)
 	if m.showHelp {
 		content = renderTUIHelp(m)
+	} else if m.showSessions {
+		content = renderSessionStatus(m)
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true

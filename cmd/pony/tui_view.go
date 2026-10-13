@@ -79,7 +79,7 @@ func renderTUI(m tuiModel) string {
 	if m.editing {
 		b.WriteString("\n" + accentStyle.Render(":") + " " + ansi.Truncate(safeText(m.command), max(1, contentWidth-4), "…") + "\n")
 	} else {
-		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  ? help  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
+		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  ? help  •  p sessions  •  v validate  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
 	}
 	return b.String()
 }
@@ -104,11 +104,14 @@ func renderTUIHelp(m tuiModel) string {
 		"  s           Stop the selected task",
 		"  R           Restart it in its worktree",
 		"  c           Clean a stopped task's clean worktree",
+		"  v           Validate the selected stopped task",
+		"  p           View agent session process status",
 		"  r           Refresh the task list",
 		"  q           Quit Pony (running agents are stopped)",
 		"",
-		"More commands are available in the CLI: pony --cli, then type help.",
-		"The CLI supports validate and agent sessions (start, send, read, attach, resize, status).",
+		"The TUI can validate a stopped task (v) and show process status (p).",
+		"For session controls, use the CLI: pony --cli, then type help.",
+		"The CLI supports start, send, read, attach, resize, and detailed status.",
 		"",
 		"Press ?, Esc, Enter, or q to return.",
 	}
@@ -116,6 +119,26 @@ func renderTUIHelp(m tuiModel) string {
 	for _, line := range lines {
 		b.WriteString(ansi.Truncate(line, contentWidth, "…") + "\n")
 	}
+	return panelStyle.Render(b.String())
+}
+
+func renderSessionStatus(m tuiModel) string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	contentWidth := max(1, width-6)
+	var b strings.Builder
+	b.WriteString("PONY SESSION STATUS\n\n")
+	if len(m.agents) == 0 {
+		b.WriteString("No agent sessions have been started in this Pony process.\n")
+	} else {
+		for _, session := range m.agents {
+			line := fmt.Sprintf("%-20s pid=%-7d runtime=%s", session.AgentID, session.PID, session.State)
+			b.WriteString(ansi.Truncate(line, contentWidth, "…") + "\n")
+		}
+	}
+	b.WriteString("\nSession status is process-level information. Press p, Esc, Enter, or q to return.\n")
 	return panelStyle.Render(b.String())
 }
 
