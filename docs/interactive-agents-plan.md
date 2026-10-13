@@ -1,6 +1,6 @@
 # Pony — Interactive Agents + State From Output (Plan)
 
-> **Status:** Phases 1–2 implemented; later phases planned.
+> **Status:** Phases 1–3 implemented; later phases planned.
 > This is a follow-on plan, not part of [v1-plan.md](./v1-plan.md).
 
 > Build Pony one systems problem at a time.
@@ -205,8 +205,14 @@ known coding agent.
 
 ``` text
 pony> status
-a    pid=1234   runtime=running   agent=codex   state=idle
+a    pid=1234   runtime=running   kind=codex   agent=unknown   fgpid=1234   process=codex
 ```
+
+The kind and foreground process are best-effort observations. If `/proc`
+changes during a lookup, the process is unrecognized, or the PTY does not
+report a foreground group, status shows `kind=unknown` and empty process
+details. Supported executable names are `codex`, `opencode`, `claude`,
+and `aider`.
 
 ------------------------------------------------------------------------
 

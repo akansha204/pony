@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // defaultWinsize is the terminal size applied to a freshly started PTY.
@@ -118,6 +119,24 @@ func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
 		Rows: rows,
 		Cols: cols,
 	})
+}
+
+// ForegroundProcessGroup reports the PTY's current foreground process group.
+// The lock keeps Wait from closing and reusing the master fd during ioctl.
+func (d *PTYDriver) ForegroundProcessGroup(h *Handle) (int, error) {
+	h.stateMu.RLock()
+	defer h.stateMu.RUnlock()
+	if h.master == nil {
+		return 0, fmt.Errorf("%w: process %d has no PTY", ErrClosed, h.PID)
+	}
+	pgid, err := unix.IoctlGetInt(int(h.master.Fd()), unix.TIOCGPGRP)
+	if err != nil {
+		return 0, fmt.Errorf("read PTY foreground process group: %w", err)
+	}
+	if pgid <= 0 {
+		return 0, fmt.Errorf("PTY returned invalid foreground process group %d", pgid)
+	}
+	return pgid, nil
 }
 
 // Stop kills every process group in the session, not just the leader's, so

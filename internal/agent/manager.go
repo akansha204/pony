@@ -21,6 +21,19 @@ type Manager struct {
 }
 
 const stopSettle = 2 * time.Second
+const identityRefreshInterval = 500 * time.Millisecond
+
+type foregroundGroupReader interface {
+	ForegroundProcessGroup(*driver.Handle) (int, error)
+}
+
+type foregroundCheck struct {
+	index     int
+	owner     *agent
+	session   *session
+	handle    *driver.Handle
+	sessionID int
+}
 
 func NewManager(d driver.Driver) *Manager {
 	return &Manager{agents: make(map[AgentID]*agent), driver: d}
@@ -84,6 +97,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 		Generation: gen + 1,
 		State:      StateStarting,
 		AgentState: AgentStateUnknown,
+		agentKind:  AgentKindUnknown,
 		screen:     screen.New(24, 80, 256),
 		screenFeed: make(chan []byte, 64),
 	}
@@ -321,11 +335,39 @@ func (m *Manager) ScreenSnapshot(id AgentID) (screen.Snapshot, error) {
 
 func (m *Manager) Snapshots() []SessionSnapshot {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	out := make([]SessionSnapshot, 0, len(m.agents))
+	checks := make([]foregroundCheck, 0, len(m.agents))
+	reader, canInspect := m.driver.(foregroundGroupReader)
+	now := time.Now()
 	for _, a := range m.agents {
-		out = append(out, snapshotOf(a))
+		snapshot := snapshotOf(a)
+		index := len(out)
+		out = append(out, snapshot)
+		s := a.session
+		if canInspect && s != nil && s.State == StateRunning && s.h != nil && now.Sub(s.identityCheckedAt) >= identityRefreshInterval {
+			s.identityCheckedAt = now
+			checks = append(checks, foregroundCheck{index: index, owner: a, session: s, handle: s.h, sessionID: s.h.PID})
+		}
+	}
+	m.mu.Unlock()
+
+	for _, check := range checks {
+		identity := foregroundIdentity{Kind: AgentKindUnknown}
+		if pgid, err := reader.ForegroundProcessGroup(check.handle); err == nil {
+			if found, err := lookupForegroundIdentity("/proc", check.sessionID, pgid); err == nil {
+				identity = found
+			}
+		}
+		m.mu.Lock()
+		if check.owner.session == check.session {
+			check.session.foregroundPID = identity.PID
+			check.session.foregroundProcess = identity.Process
+			check.session.agentKind = identity.Kind
+			out[check.index].ForegroundPID = identity.PID
+			out[check.index].ForegroundProcess = identity.Process
+			out[check.index].AgentKind = identity.Kind
+		}
+		m.mu.Unlock()
 	}
 	return out
 }
@@ -338,18 +380,22 @@ func snapshotOf(a *agent) SessionSnapshot {
 			SessionID:  a.sessionID,
 			State:      StateIdle,
 			AgentState: AgentStateUnknown,
+			AgentKind:  AgentKindUnknown,
 		}
 	}
 
 	return SessionSnapshot{
-		AgentID:    a.spec.ID,
-		SessionID:  s.ID,
-		Generation: s.Generation,
-		State:      s.State,
-		AgentState: s.AgentState,
-		PID:        s.PID,
-		StartedAt:  s.StartedAt,
-		ExitedAt:   s.ExitedAt,
+		AgentID:           a.spec.ID,
+		SessionID:         s.ID,
+		Generation:        s.Generation,
+		State:             s.State,
+		AgentState:        s.AgentState,
+		AgentKind:         s.agentKind,
+		ForegroundPID:     s.foregroundPID,
+		ForegroundProcess: s.foregroundProcess,
+		PID:               s.PID,
+		StartedAt:         s.StartedAt,
+		ExitedAt:          s.ExitedAt,
 	}
 }
 

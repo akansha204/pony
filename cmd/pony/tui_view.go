@@ -162,7 +162,7 @@ func renderSessionStatus(m tuiModel) string {
 		b.WriteString("No agent sessions have been started in this Pony process.\n")
 	} else {
 		for _, session := range m.agents {
-			line := fmt.Sprintf("%-20s pid=%-7d runtime=%s agent=%s", session.AgentID, session.PID, session.State, session.AgentState)
+			line := fmt.Sprintf("%-20s pid=%-7d runtime=%s kind=%s agent=%s fgpid=%d process=%s", session.AgentID, session.PID, session.State, session.AgentKind, session.AgentState, session.ForegroundPID, session.ForegroundProcess)
 			b.WriteString(ansi.Truncate(line, contentWidth, "…") + "\n")
 		}
 	}

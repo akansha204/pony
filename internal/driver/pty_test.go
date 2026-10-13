@@ -80,6 +80,35 @@ func TestBlockingReadDoesNotBlockWrite(t *testing.T) {
 	}
 }
 
+func TestForegroundProcessGroup(t *testing.T) {
+	d := NewPTYDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopped := make(chan error, 1)
+		go func() { stopped <- d.Stop(context.Background(), h) }()
+		d.Wait(h)
+		<-stopped
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		pgid, err := d.ForegroundProcessGroup(h)
+		if err == nil {
+			if pgid != h.PID {
+				t.Fatalf("foreground process group = %d, want session leader %d", pgid, h.PID)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ForegroundProcessGroup: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A background job running under interactive job control gets its own process
 // group inside the terminal's session. Stop must reach that group too, not
 // just the session leader's: otherwise the job survives a stopped shell.

@@ -272,10 +272,10 @@ func TestTUIReadReportsDroppedOutput(t *testing.T) {
 	}
 }
 
-func TestTUISessionStatusShowsAgentState(t *testing.T) {
-	m := tuiModel{showSessions: true, width: 100, agents: []agent.SessionSnapshot{{AgentID: "demo", PID: 42, State: agent.StateRunning, AgentState: agent.AgentStateUnknown}}}
+func TestTUISessionStatusShowsAgentIdentityAndState(t *testing.T) {
+	m := tuiModel{showSessions: true, width: 140, agents: []agent.SessionSnapshot{{AgentID: "demo", PID: 42, State: agent.StateRunning, AgentState: agent.AgentStateUnknown, AgentKind: agent.AgentKindCodex, ForegroundPID: 43, ForegroundProcess: "codex"}}}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "runtime=running agent=unknown") {
+	if !strings.Contains(view, "runtime=running kind=codex agent=unknown fgpid=43 process=codex") {
 		t.Fatalf("session status view = %q", view)
 	}
 }

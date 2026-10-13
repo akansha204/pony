@@ -17,12 +17,23 @@ type RuntimeState string
 // It is independent from RuntimeState, which remains authoritative for process lifecycle.
 type AgentState string
 
+// AgentKind is the executable family recognized in the PTY foreground group.
+type AgentKind string
+
 const (
 	AgentStateUnknown AgentState = "unknown"
 	AgentStateIdle    AgentState = "idle"
 	AgentStateWorking AgentState = "working"
 	AgentStateBlocked AgentState = "blocked"
 	AgentStateDone    AgentState = "done"
+)
+
+const (
+	AgentKindUnknown  AgentKind = "unknown"
+	AgentKindCodex    AgentKind = "codex"
+	AgentKindOpenCode AgentKind = "opencode"
+	AgentKindClaude   AgentKind = "claude"
+	AgentKindAider    AgentKind = "aider"
 )
 
 const (
@@ -59,13 +70,17 @@ type session struct {
 	StartedAt  time.Time
 	ExitedAt   time.Time
 
-	PID        int
-	h          *driver.Handle
-	done       chan struct{}
-	stopReq    bool
-	out        *outputBuffer
-	screen     *screen.Model
-	screenFeed chan []byte
+	PID               int
+	h                 *driver.Handle
+	done              chan struct{}
+	stopReq           bool
+	out               *outputBuffer
+	screen            *screen.Model
+	screenFeed        chan []byte
+	foregroundPID     int
+	foregroundProcess string
+	agentKind         AgentKind
+	identityCheckedAt time.Time
 }
 
 type agent struct {
@@ -75,12 +90,15 @@ type agent struct {
 }
 
 type SessionSnapshot struct {
-	AgentID    AgentID
-	SessionID  SessionID
-	Generation uint64
-	State      RuntimeState
-	AgentState AgentState
-	PID        int
-	StartedAt  time.Time
-	ExitedAt   time.Time
+	AgentID           AgentID
+	SessionID         SessionID
+	Generation        uint64
+	State             RuntimeState
+	AgentState        AgentState
+	AgentKind         AgentKind
+	ForegroundPID     int
+	ForegroundProcess string
+	PID               int
+	StartedAt         time.Time
+	ExitedAt          time.Time
 }
