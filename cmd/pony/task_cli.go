@@ -30,7 +30,7 @@ type runOptions struct {
 }
 
 func parseRun(fields []string) (runOptions, error) {
-	opts := runOptions{baseRef: "HEAD"}
+	opts := runOptions{baseRef: "HEAD", repo: "."}
 	for i := 0; i < len(fields); i++ {
 		if i+1 >= len(fields) {
 			return runOptions{}, fmt.Errorf("%s needs a value", fields[i])
@@ -60,8 +60,8 @@ func parseRun(fields []string) (runOptions, error) {
 			return runOptions{}, fmt.Errorf("unknown run flag %q", fields[i-1])
 		}
 	}
-	if opts.id == "" || strings.TrimSpace(opts.goal) == "" || strings.TrimSpace(opts.repo) == "" || strings.TrimSpace(opts.command) == "" || len(opts.steps) == 0 {
-		return runOptions{}, fmt.Errorf("usage: run --id ID --goal TEXT --repo PATH --command CMD [--arg ARG] --validate COMMAND")
+	if opts.id == "" || strings.TrimSpace(opts.goal) == "" || strings.TrimSpace(opts.repo) == "" || strings.TrimSpace(opts.command) == "" {
+		return runOptions{}, fmt.Errorf("usage: run --id ID --goal TEXT --command CMD [--repo PATH] [--arg ARG] [--validate COMMAND]")
 	}
 	return opts, nil
 }
@@ -164,13 +164,18 @@ func (a *app) watch(id task.TaskID) {
 				a.mu.Unlock()
 				return
 			}
-			if current.State == agent.StateStopped {
+			steps := append([]validation.Step(nil), run.steps...)
+			if current.State == agent.StateStopped && len(steps) > 0 {
 				run.validating = true
 			}
 			a.mu.Unlock()
 			snapshot, err := a.tasks.Refresh(id)
 			if err == nil && snapshot.State == task.StateStopped {
-				_, _, _ = a.tasks.ValidateContext(a.ctx, id, run.steps)
+				if len(steps) > 0 {
+					_, _, _ = a.tasks.ValidateContext(a.ctx, id, steps)
+				} else {
+					_, _ = a.tasks.Complete(id, current.Generation)
+				}
 			}
 			a.mu.Lock()
 			run.validating = false
@@ -227,6 +232,9 @@ func (a *app) validate(id task.TaskID) (task.Snapshot, []validation.Result, erro
 	a.mu.Unlock()
 	if run == nil {
 		return task.Snapshot{}, nil, fmt.Errorf("no task %q", id)
+	}
+	if len(run.steps) == 0 {
+		return task.Snapshot{}, nil, fmt.Errorf("task %q has no validation commands configured; add --validate when starting the task", id)
 	}
 	return a.tasks.Validate(id, run.steps)
 }

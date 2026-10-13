@@ -83,7 +83,7 @@ func TestParseRun(t *testing.T) {
 	}
 	for _, fields := range [][]string{
 		{"--id", "task"},
-		{"--id", "task", "--goal", "goal", "--repo", "/repo", "--command", "sh"},
+		{"--id", "task", "--goal", "goal", "--repo", "/repo"},
 		{"--unknown", "value"},
 		{"--validate"},
 	} {

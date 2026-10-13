@@ -18,7 +18,7 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	if task.SessionID == "" {
 		return Snapshot{}, fmt.Errorf("task %q has not been started", id)
 	}
-	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed {
+	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed || task.State == StateCompleted {
 		return Snapshot{}, fmt.Errorf("task %q is %s", id, task.State)
 	}
 	if err := m.agents.Stop(agent.AgentID(id)); err != nil {
@@ -32,6 +32,25 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	task.State = StateStopped
 	m.tasks[id] = task
 	m.record(task, event.RuntimeExited, session.Generation, "runtime stopped")
+	return task, nil
+}
+
+// Complete marks a normally exited task as completed when no validation was
+// configured for it. The state intentionally remains distinct from verified.
+func (m *Manager) Complete(id TaskID, generation uint64) (Snapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	task, ok := m.tasks[id]
+	if !ok {
+		return Snapshot{}, fmt.Errorf("no task %q", id)
+	}
+	if task.State != StateStopped {
+		return Snapshot{}, fmt.Errorf("complete task %q: state is %s, want stopped", id, task.State)
+	}
+	task.State = StateCompleted
+	m.tasks[id] = task
+	m.record(task, event.TaskCompleted, generation, "task completed without validation")
 	return task, nil
 }
 
@@ -82,7 +101,7 @@ func (m *Manager) Refresh(id TaskID) (Snapshot, error) {
 	if task.SessionID == "" {
 		return task, nil
 	}
-	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed {
+	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed || task.State == StateCompleted {
 		return task, nil
 	}
 

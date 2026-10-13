@@ -25,6 +25,7 @@ const (
 	StateVerified   State = "verified"
 	StateFailed     State = "failed"
 	StateStopped    State = "stopped"
+	StateCompleted  State = "completed"
 )
 
 type Spec struct {
