@@ -412,6 +412,33 @@ func TestCLICommandRunsTaskToVerification(t *testing.T) {
 	}
 }
 
+func TestCLIHandlesCRLFTerminatedQuit(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$")
+	cmd.Env = append(os.Environ(), "PONY_CLI_TEST_HELPER=1", "XDG_DATA_HOME="+t.TempDir())
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output, errorsOut bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &errorsOut
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Write([]byte("quit\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Pony: %v\nstdout: %s\nstderr: %s", err, output.String(), errorsOut.String())
+	}
+	if strings.Contains(output.String(), "unknown command") {
+		t.Fatalf("CRLF quit was not recognized:\n%s", output.String())
+	}
+}
+
 func TestStopWaitsForAutomaticValidation(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{

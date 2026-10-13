@@ -91,6 +91,7 @@ func main() {
 			continue
 		}
 
+		line = strings.TrimSuffix(line, "\r")
 		fields, err := shell_lexer.Fields(line)
 		if err != nil {
 			fmt.Println("malformed input:", err)
