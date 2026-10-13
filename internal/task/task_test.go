@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,11 @@ func testRepository(t *testing.T) string {
 
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	runGitOutput(t, dir, args...)
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -38,9 +44,11 @@ func runGit(t *testing.T, dir string, args ...string) {
 		"GIT_COMMITTER_NAME=Pony Test",
 		"GIT_COMMITTER_EMAIL=pony@example.test",
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+	return string(out)
 }
 
 func newManager(t *testing.T) *Manager {
@@ -248,6 +256,20 @@ func TestStartRollsBackWorkspaceWhenAgentFails(t *testing.T) {
 		if ws.Managed {
 			t.Fatalf("managed workspace remains after rollback: %+v", ws)
 		}
+	}
+	if out := strings.TrimSpace(runGitOutput(t, repo, "branch", "--list", "pony/task")); out != "" {
+		t.Fatalf("task branch remains after failed start: %q", out)
+	}
+
+	started, err := m.Start("task", LaunchSpec{Command: "sh", Args: []string{"-c", "sleep 5"}})
+	if err != nil {
+		t.Fatalf("retry Start after launch failure: %v", err)
+	}
+	if started.State != StateRunning {
+		t.Fatalf("retry task state = %s, want running", started.State)
+	}
+	if _, err := m.Stop("task"); err != nil {
+		t.Fatalf("stop retried task: %v", err)
 	}
 }
 

@@ -18,6 +18,7 @@ func (m *Manager) Allocate(spec Spec) (Workspace, error) {
 	if err != nil {
 		return Workspace{}, fmt.Errorf("resolve base ref %q: %w", spec.BaseRef, err)
 	}
+	workspace.BaseCommit = baseCommit
 
 	rootCreated, err := ensureDirectory(m.root)
 	if err != nil {
@@ -140,6 +141,66 @@ func (m *Manager) rollbackAllocation(workspace Workspace, baseCommit string, roo
 		if err := os.Remove(m.root); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("remove empty workspace root %q: %w", m.root, err)
 		}
+	}
+	return nil
+}
+
+// RollbackUnusedAllocation removes a freshly allocated, unchanged workspace
+// after its agent failed to start. User-facing Release intentionally keeps
+// the task branch, so startup rollback has its own compare-and-swap cleanup.
+func (m *Manager) RollbackUnusedAllocation(workspace Workspace) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !workspace.Managed || workspace.ID == "" || workspace.BaseCommit == "" {
+		return fmt.Errorf("rollback unused allocation: workspace identity is incomplete")
+	}
+	listed, err := m.List(workspace.Repository)
+	if err != nil {
+		return fmt.Errorf("inspect allocation before rollback: %w", err)
+	}
+	registered := false
+	for _, current := range listed {
+		if current.ID == workspace.ID && current.Managed && current.Branch == workspace.Branch && samePath(current.Path, workspace.Path) {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		return fmt.Errorf("rollback unused allocation: workspace %q is no longer registered at its allocated path", workspace.ID)
+	}
+	if err := requireCleanWorktree(workspace.Path); err != nil {
+		return fmt.Errorf("preserving failed-start workspace %q: %w", workspace.ID, err)
+	}
+	head, err := resolveCommit(workspace.Path, "HEAD")
+	if err != nil {
+		return fmt.Errorf("inspect workspace %q before rollback: %w", workspace.ID, err)
+	}
+	if head != workspace.BaseCommit {
+		return fmt.Errorf("preserving failed-start workspace %q: branch advanced from %s to %s", workspace.ID, workspace.BaseCommit, head)
+	}
+	if _, err := gitOutput(workspace.Repository, "worktree", "remove", "--", workspace.Path); err != nil {
+		return fmt.Errorf("remove unused workspace %q: %w", workspace.ID, err)
+	}
+
+	listed, err = m.List(workspace.Repository)
+	if err != nil {
+		return fmt.Errorf("inspect allocation branch after removing workspace %q: %w", workspace.ID, err)
+	}
+	for _, current := range listed {
+		if current.Branch == workspace.Branch {
+			return fmt.Errorf("preserving allocation branch %q: it is checked out at %q", workspace.Branch, current.Path)
+		}
+	}
+	branchCommit, err := resolveCommit(workspace.Repository, "refs/heads/"+workspace.Branch)
+	if err != nil {
+		return fmt.Errorf("inspect allocation branch %q: %w", workspace.Branch, err)
+	}
+	if branchCommit != workspace.BaseCommit {
+		return fmt.Errorf("preserving allocation branch %q: it advanced from %s to %s", workspace.Branch, workspace.BaseCommit, branchCommit)
+	}
+	if _, err := gitOutput(workspace.Repository, "update-ref", "-d", "refs/heads/"+workspace.Branch, workspace.BaseCommit); err != nil {
+		return fmt.Errorf("remove unused allocation branch %q: %w", workspace.Branch, err)
 	}
 	return nil
 }
