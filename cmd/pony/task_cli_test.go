@@ -178,6 +178,46 @@ func TestTaskAttachDetachKeepsSession(t *testing.T) {
 	}
 }
 
+func TestRestartResendsTaskGoal(t *testing.T) {
+	a, repo := cliApp(t)
+	goalFile := filepath.Join(t.TempDir(), "received-goals.txt")
+	goal := "fix the widget"
+	command := fmt.Sprintf(`IFS= read -r goal; printf '%%s\n' "$goal" >> '%s'; sleep 1000`, goalFile)
+	if _, err := a.run(runOptions{
+		id: "restart-goal", goal: goal, repo: repo, baseRef: "HEAD",
+		command: "sh", args: []string{"-c", command},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	waitForGoalCount := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			raw, err := os.ReadFile(goalFile)
+			if err == nil && len(strings.Split(strings.TrimSpace(string(raw)), "\n")) == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		raw, _ := os.ReadFile(goalFile)
+		t.Fatalf("received goals = %q, want %d copies of %q", raw, want, goal)
+	}
+	waitForGoalCount(1)
+	if _, err := a.stop("restart-goal"); err != nil {
+		t.Fatalf("stop before restart: %v", err)
+	}
+	if _, err := a.restart("restart-goal"); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	waitForGoalCount(2)
+	if _, err := a.stop("restart-goal"); err != nil {
+		t.Fatalf("stop after restart: %v", err)
+	}
+	if err := a.clean("restart-goal"); err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+}
+
 func TestExplicitStopSkipsAutomaticValidation(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{

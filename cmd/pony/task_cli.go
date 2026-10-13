@@ -217,6 +217,17 @@ func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
 	if err != nil {
 		return snapshot, err
 	}
+	if _, err := a.agents.Write(agent.AgentID(id), []byte(snapshot.Goal+"\n")); err != nil {
+		goalErr := fmt.Errorf("send goal after restarting task %q: %w", id, err)
+		a.mu.Lock()
+		if run := a.runs[id]; run != nil {
+			run.stopRequested = true
+		}
+		a.mu.Unlock()
+		stopErr := a.agents.Stop(agent.AgentID(id))
+		a.watch(id)
+		return snapshot, errors.Join(goalErr, stopErr)
+	}
 	a.mu.Lock()
 	if run := a.runs[id]; run != nil {
 		run.stopRequested = false
