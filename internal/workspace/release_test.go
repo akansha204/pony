@@ -71,6 +71,82 @@ func TestReleaseRefusesDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestReleasePreservesIgnoredFile(t *testing.T) {
+	repo := testRepository(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("secret.env\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .gitignore: %v", err)
+	}
+	run(t, repo, "git", "add", ".gitignore")
+	run(t, repo, "git", "commit", "-m", "ignore secret files")
+	m, _ := NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	workspace, err := m.Allocate(Spec{TaskID: "ignored", Repository: repo, BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	secret := filepath.Join(workspace.Path, "secret.env")
+	if err := os.WriteFile(secret, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile ignored file: %v", err)
+	}
+
+	if err := m.Release(repo, workspace.ID); err == nil {
+		t.Fatal("Release removed a worktree containing an ignored file")
+	}
+	contents, err := os.ReadFile(secret)
+	if err != nil {
+		t.Fatalf("ignored file was removed: %v", err)
+	}
+	if string(contents) != "keep me\n" {
+		t.Fatalf("ignored file contents = %q, want preserved contents", contents)
+	}
+}
+
+func TestReleasePreservesIgnoredDirectory(t *testing.T) {
+	repo := testRepository(t)
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("build-cache/\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .gitignore: %v", err)
+	}
+	run(t, repo, "git", "add", ".gitignore")
+	run(t, repo, "git", "commit", "-m", "ignore build cache")
+	m, _ := NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	workspace, err := m.Allocate(Spec{TaskID: "ignored-dir", Repository: repo, BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	cacheFile := filepath.Join(workspace.Path, "build-cache", "nested", "artifact.bin")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll ignored directory: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("keep cache\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile ignored file: %v", err)
+	}
+
+	if err := m.Release(repo, workspace.ID); err == nil {
+		t.Fatal("Release removed a worktree containing an ignored directory")
+	}
+	contents, err := os.ReadFile(cacheFile)
+	if err != nil {
+		t.Fatalf("ignored directory contents were removed: %v", err)
+	}
+	if string(contents) != "keep cache\n" {
+		t.Fatalf("ignored file contents = %q, want preserved contents", contents)
+	}
+}
+
+func TestReleaseRemovesCompletelyCleanWorktree(t *testing.T) {
+	repo := testRepository(t)
+	m, _ := NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	workspace, err := m.Allocate(Spec{TaskID: "clean", Repository: repo, BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+	if err := m.Release(repo, workspace.ID); err != nil {
+		t.Fatalf("Release clean worktree: %v", err)
+	}
+	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
+		t.Fatalf("clean worktree path remains or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestReleaseRefusesUnmanagedWorktree(t *testing.T) {
 	repo := testRepository(t)
 	root := filepath.Join(t.TempDir(), "workspaces")

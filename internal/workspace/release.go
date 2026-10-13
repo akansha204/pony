@@ -34,6 +34,9 @@ func (m *Manager) Release(repository string, id WorkspaceID) error {
 
 	for _, workspace := range workspaces {
 		if workspace.ID == id && workspace.Managed {
+			if err := requireCleanWorktree(workspace.Path); err != nil {
+				return err
+			}
 			if _, err := gitOutput(repo, "worktree", "remove", "--", workspace.Path); err != nil {
 				return fmt.Errorf("release workspace %q: %w", id, err)
 			}
@@ -61,6 +64,21 @@ func (m *Manager) Release(repository string, id WorkspaceID) error {
 		return nil
 	}
 	return fmt.Errorf("no workspace %q", id)
+}
+
+func requireCleanWorktree(path string) error {
+	status, err := gitOutput(
+		path,
+		"status", "--porcelain=v1", "-z",
+		"--untracked-files=all", "--ignored=matching",
+	)
+	if err != nil {
+		return fmt.Errorf("inspect workspace contents %q: %w", path, err)
+	}
+	if len(status) != 0 {
+		return fmt.Errorf("workspace %q contains changed, untracked, or ignored files; preserving it", path)
+	}
+	return nil
 }
 
 func taskIDFromWorkspaceID(id WorkspaceID) (string, error) {
