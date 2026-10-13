@@ -108,3 +108,152 @@ Task state lives in the current Pony process. Closing Pony stops running
 agents and leaves worktrees available for inspection. The default
 worktree root is `$XDG_DATA_HOME/pony/workspaces`, or
 `$HOME/.local/share/pony/workspaces` when `XDG_DATA_HOME` is unset.
+
+## Interactive agent sessions
+
+Use an interactive session when you want to start an agent and keep its
+terminal open while you send it more work, check what it printed, or take over
+typing yourself. This is separate from `run`: `run` gives a task its own Git
+worktree and goal, while `start` launches a long-running terminal session in
+the current directory.
+
+### Start Pony
+
+Open the TUI (the default):
+
+```sh
+pony
+```
+
+Or open the text-command CLI:
+
+```sh
+pony --cli
+```
+
+The examples below use an agent named `reviewer`. Pick any name that helps you
+remember what that session is doing. The command after the name must be
+installed and available on your `PATH` (for example, `codex`):
+
+```text
+start reviewer codex
+```
+
+In the TUI, press `:` first, type the command, and press Enter. In the CLI,
+type it at the `pony>` prompt. Pony starts the agent in a terminal session and
+keeps that session running while you use Pony.
+
+### Give the agent work
+
+To send one prompt, use `prompt`:
+
+```text
+prompt reviewer "Look through this project and explain how login works"
+```
+
+Pony submits the text as a prompt and returns control to you. If you want Pony
+to wait until the agent appears idle, ask for that explicitly:
+
+```text
+prompt reviewer --wait idle "Look through this project and explain how login works"
+```
+
+You can also wait for the agent to need you (`blocked`) or to finish (`done`):
+
+```text
+prompt reviewer --wait blocked "Try the small fix we discussed"
+prompt reviewer --wait done "Run the checks and summarize the result"
+```
+
+Waiting is based on Pony observing the agent work and then observing the
+requested state. It can take up to two minutes. In the TUI, the wait happens
+in the background, so you can still use the interface while it waits.
+
+Use `send` when you want to type a line into the agent's terminal directly:
+
+```text
+send reviewer "Please explain that last error"
+```
+
+`send` presses Enter after the line. Use `prompt` for a prompt that Pony should
+submit as a prompt; use `send` for direct terminal input.
+
+### See what is happening
+
+Use these commands to inspect or take control of a session:
+
+```text
+status
+read reviewer
+screen reviewer
+attach reviewer
+```
+
+`status` lists sessions and their process and agent states. `read` shows recent
+output captured from the session. The CLI's `screen` command shows the latest
+visible terminal screen; Pony warns you if its screen view may be incomplete.
+`attach` gives you direct keyboard control of the agent's terminal. Press
+Ctrl+\\ to detach and return to Pony.
+
+In the TUI, press `p` to open the session status panel, or press `:` and enter
+`status`. Use `read`, `attach`, and the other session commands the same way:
+press `:` first, then type the command. Press `?` at any time for the built-in
+help. The TUI does not currently offer the CLI's `screen` command.
+
+### Understand session status
+
+Pony reports two different kinds of state:
+
+- `runtime` describes the process Pony started: for example, `running` or
+  `exited`. This is about the program itself.
+- `agent` is Pony's best guess about what the agent is doing: for example,
+  `working`, `idle`, `blocked`, `done`, or `unknown`.
+
+For example, an agent can have `runtime=running` and `agent=blocked`: the
+program is still alive, but it appears to be waiting for you. `attention` is
+`needs-you` when the agent is blocked or has reached `done`. In the TUI these
+sessions are highlighted so they are easier to spot. Opening the status panel
+also acknowledges a `done` state and clears that attention marker.
+
+The agent state comes from text Pony can see on the terminal screen, using the
+profile for that agent type. It is an estimate, not a message from the agent
+or proof that a task is complete. `unknown` means Pony could not confidently
+match the screen to a known state. Use `read` or `attach` to check for yourself.
+Pony recognizes common agent commands such as Codex, Claude, OpenCode, and
+Aider; other commands can still run, but may show as `unknown`. Profiles are
+stored in `profiles/agents/`; set `PONY_AGENT_PROFILES` to use a different
+profile directory.
+
+### Stop or restart a session
+
+```text
+stop reviewer
+restart reviewer
+```
+
+`stop` ends the session. `restart` starts it again with the same command and
+arguments. Quit Pony when you're finished; Pony stops its running sessions on
+exit. `resize reviewer 30 100` changes the session terminal to 30 rows by 100
+columns if you need to match your terminal size.
+
+### A complete example
+
+Here is a typical CLI session from start to finish:
+
+```text
+pony> start reviewer codex
+pony> prompt reviewer --wait idle "Explain how login works in this project"
+reviewer reached idle
+pony> read reviewer
+pony> status
+reviewer   pid=... runtime=running kind=codex agent=idle attention=none ...
+pony> prompt reviewer --wait done "Make the agreed change and run the checks"
+reviewer reached done
+pony> status
+reviewer   pid=... runtime=running kind=codex agent=done attention=needs-you ...
+pony> attach reviewer
+```
+
+In the TUI, use the same commands after pressing `:`; use `p` to check status
+and `?` to revisit the guide. Once attached, work directly in the agent's
+terminal and press Ctrl+\\ to return to Pony.
