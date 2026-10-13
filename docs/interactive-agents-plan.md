@@ -1,6 +1,6 @@
 # Pony — Interactive Agents + State From Output (Plan)
 
-> **Status:** Phases 1–5 implemented; later phases planned.
+> **Status:** Phases 1–6 implemented; plan complete.
 > This is a follow-on plan, not part of [v1-plan.md](./v1-plan.md).
 
 > Build Pony one systems problem at a time.
@@ -17,8 +17,8 @@ interactive sessions; it does not replace or change task validation.
 This plan adds the **smallest possible observation layer**: track a
 best-effort semantic state for interactive agents, infer it from the
 terminal they already use, and make it visible. Users can already type
-into these terminals with `send` or `attach`; the later prompt phase
-will add a higher-level prompt-and-wait command. Think *herdr minus the
+into these terminals with `send` or `attach`; `prompt` adds a higher-level
+prompt-and-wait command over the same PTY write path. Think *herdr minus the
 daemon, the panes, the persistence, and the cross-platform story*.
 
 It is deliberately **single-process and best-effort**. It is a hint
@@ -355,26 +355,39 @@ Make state visible where people already look: the REPL and the TUI.
 ### Build
 
 -   `status` gains the semantic state (and the detected kind).
--   The TUI shows per-agent state, and flags `blocked`/`done` as
-    "needs attention".
--   Optional: a single terminal bell on entering `blocked`/`done`.
+-   The CLI marks `blocked` and `done` sessions with
+    `attention=needs-you`.
+-   The TUI session panel highlights `blocked` and `done` with an
+    attention marker.
+-   A `working` → `idle` transition becomes sticky `done` until the user
+    views session status. CLI `status` and opening the TUI session panel
+    show `done` once, then clear it to `idle`.
+-   Runtime process state remains independent and authoritative.
 
 ### Invariants
 
 -   Purely additive to existing views; headless `run` tasks are
     unaffected and keep showing validation status.
--   No polling storm: state updates ride on output/events, not a tight
-    loop.
+-   No additional polling loop is introduced; the existing bounded
+    screen sampling interval is reused.
+
+### Tests
+
+-   [x] `working` → `idle` becomes sticky `done` without changing runtime state.
+-   [x] Viewing status returns `done` once, then clears it to `idle`.
+-   [x] The TUI marks both `blocked` and `done` as needing attention.
+-   [x] CLI status marks attention states explicitly.
 
 ### Done when
 
 ``` text
 pony> status
-reviewer   pid=…  runtime=running  agent=codex  state=blocked   ← needs you
-builder    pid=…  runtime=running  agent=opencode  state=working
+reviewer   pid=…  runtime=running  kind=codex  agent=blocked  attention=needs-you
+builder    pid=…  runtime=running  kind=opencode  agent=working  attention=no
 ```
 
-and the TUI highlights the blocked one.
+and the TUI highlights the blocked one. A session that finishes while
+unseen stays marked `done` until its status is viewed.
 
 ------------------------------------------------------------------------
 

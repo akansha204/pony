@@ -389,8 +389,11 @@ func (m *Manager) Prompt(ctx context.Context, id AgentID, text string, waitFor A
 			if snapshot.AgentState == AgentStateWorking {
 				sawWorking = true
 			}
-			if sawWorking && snapshot.AgentState == waitFor {
-				return snapshot.AgentState, nil
+			// Done is the sticky attention form of an idle result that arrived
+			// while unseen, so it also satisfies a wait for idle.
+			settled := snapshot.AgentState == waitFor || (waitFor == AgentStateIdle && snapshot.AgentState == AgentStateDone)
+			if sawWorking && settled {
+				return waitFor, nil
 			}
 		}
 		select {
@@ -512,6 +515,12 @@ func (m *Manager) Snapshots() []SessionSnapshot {
 		}
 		m.mu.Lock()
 		if check.owner.session == check.session && check.session.State == StateRunning {
+			previousState := check.session.AgentState
+			if state == detect.Idle && previousState == AgentStateWorking {
+				state = detect.State(AgentStateDone)
+			} else if previousState == AgentStateDone && (state == detect.Idle || state == detect.Unknown) {
+				state = detect.State(AgentStateDone)
+			}
 			if check.identity {
 				check.session.foregroundPID = identity.PID
 				check.session.foregroundProcess = identity.Process
@@ -521,6 +530,27 @@ func (m *Manager) Snapshots() []SessionSnapshot {
 			out[check.index] = snapshotOf(check.owner)
 		}
 		m.mu.Unlock()
+	}
+	return out
+}
+
+// ViewSnapshots returns the current status for display and clears sticky done
+// attention after returning it once. Background polling should use Snapshots.
+func (m *Manager) ViewSnapshots() []SessionSnapshot {
+	out := m.Snapshots()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range out {
+		a := m.agents[out[i].AgentID]
+		if a == nil || a.session == nil {
+			continue
+		}
+		if a.session.AgentState == AgentStateDone {
+			out[i] = snapshotOf(a)
+			a.session.AgentState = AgentStateIdle
+		} else {
+			out[i] = snapshotOf(a)
+		}
 	}
 	return out
 }

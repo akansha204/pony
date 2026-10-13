@@ -64,6 +64,7 @@ type tuiModel struct {
 	clean            func(task.TaskID) error
 	validate         func(task.TaskID) (task.Snapshot, []validation.Result, error)
 	sessions         func() []agent.SessionSnapshot
+	viewSessions     func() []agent.SessionSnapshot
 	agentsAPI        *agent.Manager
 	tasks            []task.Snapshot
 	agents           []agent.SessionSnapshot
@@ -101,12 +102,13 @@ func newTUIModel(a *app) tuiModel {
 			_, err := a.restart(id)
 			return err
 		},
-		clean:     a.clean,
-		validate:  a.validate,
-		sessions:  a.agents.Snapshots,
-		agentsAPI: a.agents,
-		tasks:     a.tasks.List(),
-		agents:    a.agents.Snapshots(),
+		clean:        a.clean,
+		validate:     a.validate,
+		sessions:     a.agents.Snapshots,
+		viewSessions: a.agents.ViewSnapshots,
+		agentsAPI:    a.agents,
+		tasks:        a.tasks.List(),
+		agents:       a.agents.Snapshots(),
 	}
 }
 
@@ -171,7 +173,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = true
 		case "p":
 			m.showSessions = !m.showSessions
-			if m.sessions != nil {
+			if m.showSessions && m.viewSessions != nil {
+				m.agents = m.viewSessions()
+			} else if m.sessions != nil {
 				m.agents = m.sessions()
 			}
 		case "j", "down":
@@ -200,7 +204,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 	case refreshMsg:
 		m.reload()
-		if m.sessions != nil {
+		if m.showSessions && m.viewSessions != nil {
+			m.agents = m.viewSessions()
+		} else if m.sessions != nil {
 			m.agents = m.sessions()
 		}
 		return m, scheduleRefresh()
@@ -440,7 +446,11 @@ func (m *tuiModel) submit() tea.Cmd {
 			}
 		case "status":
 			m.showSessions = true
-			m.refreshAgents()
+			if m.viewSessions != nil {
+				m.agents = m.viewSessions()
+			} else {
+				m.refreshAgents()
+			}
 		case "clean":
 			if len(fields) != 2 {
 				m.message = "usage: clean <task-id>"
@@ -511,7 +521,9 @@ func (m *tuiModel) submit() tea.Cmd {
 }
 
 func (m *tuiModel) refreshAgents() {
-	if m.sessions != nil {
+	if m.showSessions && m.viewSessions != nil {
+		m.agents = m.viewSessions()
+	} else if m.sessions != nil {
 		m.agents = m.sessions()
 	}
 }

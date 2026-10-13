@@ -8,17 +8,19 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/task"
 )
 
 var (
-	accentStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#001C24")).Background(lipgloss.Color("#62D6E8")).Padding(0, 1)
-	wordmarkStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#62D6E8"))
-	mutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#8B98A5"))
-	selectedStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
-	panelStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#526675")).Padding(0, 1)
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
-	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#62D6A7"))
+	accentStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#001C24")).Background(lipgloss.Color("#62D6E8")).Padding(0, 1)
+	wordmarkStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#62D6E8"))
+	mutedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#8B98A5"))
+	selectedStyle  = lipgloss.NewStyle().Reverse(true).Bold(true)
+	panelStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#526675")).Padding(0, 1)
+	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
+	successStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#62D6A7"))
+	attentionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 )
 
 const ponyWordmark = ` ____   ___  _   _ __   __
@@ -163,8 +165,20 @@ func renderSessionStatus(m tuiModel) string {
 		b.WriteString("No agent sessions have been started in this Pony process.\n")
 	} else {
 		for _, session := range m.agents {
-			line := fmt.Sprintf("%-20s pid=%-7d runtime=%s kind=%s agent=%s fgpid=%d process=%s", session.AgentID, session.PID, session.State, session.AgentKind, session.AgentState, session.ForegroundPID, session.ForegroundProcess)
-			b.WriteString(ansi.Truncate(line, contentWidth, "…") + "\n")
+			attention := session.AgentState == agent.AgentStateBlocked || session.AgentState == agent.AgentStateDone
+			marker := "  "
+			if attention {
+				marker = "!!"
+			}
+			line := fmt.Sprintf("%s %-20s pid=%-7d runtime=%s kind=%s agent=%s fgpid=%d process=%s", marker, session.AgentID, session.PID, session.State, session.AgentKind, session.AgentState, session.ForegroundPID, session.ForegroundProcess)
+			if attention {
+				line += "  NEEDS ATTENTION"
+			}
+			line = ansi.Truncate(line, contentWidth, "…")
+			if attention {
+				line = attentionStyle.Render(line)
+			}
+			b.WriteString(line + "\n")
 		}
 	}
 	b.WriteString("\nSession status is process-level information. Press p, Esc, Enter, or q to return.\n")

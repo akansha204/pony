@@ -288,9 +288,35 @@ func TestTUIReadReportsDroppedOutput(t *testing.T) {
 }
 
 func TestTUISessionStatusShowsAgentIdentityAndState(t *testing.T) {
-	m := tuiModel{showSessions: true, width: 140, agents: []agent.SessionSnapshot{{AgentID: "demo", PID: 42, State: agent.StateRunning, AgentState: agent.AgentStateUnknown, AgentKind: agent.AgentKindCodex, ForegroundPID: 43, ForegroundProcess: "codex"}}}
+	m := tuiModel{showSessions: true, width: 180, agents: []agent.SessionSnapshot{
+		{AgentID: "demo", PID: 42, State: agent.StateRunning, AgentState: agent.AgentStateUnknown, AgentKind: agent.AgentKindCodex, ForegroundPID: 43, ForegroundProcess: "codex"},
+		{AgentID: "blocked", PID: 44, State: agent.StateRunning, AgentState: agent.AgentStateBlocked, AgentKind: agent.AgentKindClaude},
+		{AgentID: "done", PID: 45, State: agent.StateRunning, AgentState: agent.AgentStateDone, AgentKind: agent.AgentKindOpenCode},
+	}}
 	view := ansi.Strip(m.View().Content)
 	if !strings.Contains(view, "runtime=running kind=codex agent=unknown fgpid=43 process=codex") {
 		t.Fatalf("session status view = %q", view)
+	}
+	if strings.Count(view, "NEEDS ATTENTION") != 2 || !strings.Contains(view, "!! blocked") || !strings.Contains(view, "!! done") {
+		t.Fatalf("attention sessions are not highlighted: %q", view)
+	}
+}
+
+func TestTUISessionPanelMarksStatusAsViewed(t *testing.T) {
+	backgroundCalls, viewCalls := 0, 0
+	m := tuiModel{
+		sessions: func() []agent.SessionSnapshot {
+			backgroundCalls++
+			return nil
+		},
+		viewSessions: func() []agent.SessionSnapshot {
+			viewCalls++
+			return []agent.SessionSnapshot{{AgentID: "demo", AgentState: agent.AgentStateDone}}
+		},
+	}
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'p', Text: "p"})
+	m = next.(tuiModel)
+	if !m.showSessions || viewCalls != 1 || backgroundCalls != 0 || len(m.agents) != 1 || m.agents[0].AgentState != agent.AgentStateDone {
+		t.Fatalf("opening sessions: show=%t view calls=%d background calls=%d agents=%+v", m.showSessions, viewCalls, backgroundCalls, m.agents)
 	}
 }

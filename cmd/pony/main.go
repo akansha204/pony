@@ -327,8 +327,8 @@ func main() {
 			fmt.Printf("resized %s to %dx%d\n", id, rows, cols)
 
 		case "status":
-			for _, snap := range mgr.Snapshots() {
-				fmt.Printf("%-10s pid=%-7d runtime=%s kind=%s agent=%s fgpid=%d process=%s\n", snap.AgentID, snap.PID, snap.State, snap.AgentKind, snap.AgentState, snap.ForegroundPID, snap.ForegroundProcess)
+			for _, snap := range mgr.ViewSnapshots() {
+				fmt.Printf("%-10s pid=%-7d runtime=%s kind=%s agent=%s attention=%s fgpid=%d process=%s\n", snap.AgentID, snap.PID, snap.State, snap.AgentKind, snap.AgentState, sessionAttention(snap.AgentState), snap.ForegroundPID, snap.ForegroundProcess)
 			}
 
 		case "quit", "exit":
@@ -402,6 +402,13 @@ type promptOptions struct {
 	id      agent.AgentID
 	text    string
 	waitFor agent.AgentState
+}
+
+func sessionAttention(state agent.AgentState) string {
+	if state == agent.AgentStateBlocked || state == agent.AgentStateDone {
+		return "needs-you"
+	}
+	return "no"
 }
 
 func parsePrompt(fields []string) (promptOptions, error) {

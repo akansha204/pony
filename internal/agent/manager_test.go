@@ -101,6 +101,38 @@ func TestSnapshotsClassifiesKnownAgentFromVisibleScreen(t *testing.T) {
 	}
 }
 
+func TestDoneStateStaysUntilViewedThenClears(t *testing.T) {
+	m := NewManager(driver.NewPTYDriver())
+	m.profiles = detect.NewProfileStore(filepath.Join("..", "..", "profiles", "agents"))
+	s := &session{
+		ID:         "sess-done",
+		State:      StateRunning,
+		AgentState: AgentStateWorking,
+		agentKind:  AgentKindCodex,
+		screen:     screen.New(4, 40, 8),
+	}
+	s.screen.Feed([]byte("\x1b[2J\x1b[H❯"))
+	m.agents["demo"] = &agent{spec: AgentSpec{ID: "demo"}, sessionID: s.ID, session: s}
+
+	got := m.Snapshots()
+	if got[0].AgentState != AgentStateDone {
+		t.Fatalf("transition to idle produced %q, want done", got[0].AgentState)
+	}
+	if got[0].State != StateRunning {
+		t.Fatalf("runtime state changed to %q, want running", got[0].State)
+	}
+	if got := m.Snapshots()[0].AgentState; got != AgentStateDone {
+		t.Fatalf("done attention was not sticky: got %q", got)
+	}
+	if got := m.ViewSnapshots()[0].AgentState; got != AgentStateDone {
+		t.Fatalf("view returned %q, want done before clearing", got)
+	}
+	gotAfterView, _ := m.Get("demo")
+	if gotAfterView.AgentState != AgentStateIdle {
+		t.Fatalf("state after viewing = %q, want idle", gotAfterView.AgentState)
+	}
+}
+
 func TestStopTerminatesProcess(t *testing.T) {
 	m := NewManager(driver.NewProcessDriver())
 	spec := AgentSpec{ID: "sleepy", Command: "sleep", Args: []string{"1000"}}

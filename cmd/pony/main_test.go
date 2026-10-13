@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/akansha204/pony/internal/agent"
 )
 
 func tempFileWith(t *testing.T, content string) *os.File {
@@ -120,6 +122,22 @@ func TestParsePromptOptions(t *testing.T) {
 				t.Fatalf("parsePrompt = %+v", got)
 			}
 		})
+	}
+}
+
+func TestSessionAttentionLabel(t *testing.T) {
+	for _, tc := range []struct {
+		state agent.AgentState
+		want  string
+	}{
+		{state: agent.AgentStateBlocked, want: "needs-you"},
+		{state: agent.AgentStateDone, want: "needs-you"},
+		{state: agent.AgentStateWorking, want: "no"},
+		{state: agent.AgentStateUnknown, want: "no"},
+	} {
+		if got := sessionAttention(tc.state); got != tc.want {
+			t.Errorf("sessionAttention(%q) = %q, want %q", tc.state, got, tc.want)
+		}
 	}
 }
 
