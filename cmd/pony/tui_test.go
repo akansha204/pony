@@ -108,12 +108,22 @@ func TestTUIRunCommand(t *testing.T) {
 		stop:    func(id task.TaskID) error { stopped = id; return nil },
 		command: "run --id demo --goal 'fix bug' --repo /tmp/repo --command sh --validate true",
 	}
-	m.submit()
+	cmd := m.submit()
+	if cmd == nil {
+		t.Fatal("run command did not schedule background action")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(tuiModel)
 	if got.id != "demo" || got.goal != "fix bug" || len(m.tasks) != 1 || m.message != "started demo" {
 		t.Fatalf("run = %+v, tasks = %+v, message = %q", got, m.tasks, m.message)
 	}
 	m.command = "stop demo"
-	m.submit()
+	cmd = m.submit()
+	if cmd == nil {
+		t.Fatal("stop command did not schedule background action")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(tuiModel)
 	if stopped != "demo" || m.message != "stop demo" {
 		t.Fatalf("stop command got id %q and message %q", stopped, m.message)
 	}
@@ -156,7 +166,12 @@ func TestTUILifecycleKeys(t *testing.T) {
 		{"c", &gotClean, "clean demo"},
 	}
 	for _, tc := range cases {
-		next, _ := m.Update(tea.KeyPressMsg{Code: rune(tc.key[0]), Text: tc.key})
+		next, cmd := m.Update(tea.KeyPressMsg{Code: rune(tc.key[0]), Text: tc.key})
+		m = next.(tuiModel)
+		if cmd == nil {
+			t.Fatalf("%q did not schedule action", tc.key)
+		}
+		next, _ = m.Update(cmd())
 		m = next.(tuiModel)
 		if *tc.got != "demo" {
 			t.Fatalf("%q did not call the action", tc.key)
@@ -169,10 +184,16 @@ func TestTUILifecycleKeys(t *testing.T) {
 
 func TestTUILifecycleKeysReportErrors(t *testing.T) {
 	m := tuiModel{
+		list:  func() []task.Snapshot { return []task.Snapshot{{ID: "demo"}} },
 		tasks: []task.Snapshot{{ID: "demo", State: task.StateRunning}},
 		stop:  func(task.TaskID) error { return errors.New("agent is stopping") },
 	}
-	next, _ := m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	m = next.(tuiModel)
+	if cmd == nil {
+		t.Fatal("stop action was not scheduled")
+	}
+	next, _ = m.Update(cmd())
 	m = next.(tuiModel)
 	if !strings.Contains(m.message, "stop demo:") {
 		t.Fatalf("error message = %q", m.message)
@@ -181,6 +202,29 @@ func TestTUILifecycleKeysReportErrors(t *testing.T) {
 	next, _ = empty.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
 	if next.(tuiModel).message != "no task selected" {
 		t.Fatalf("empty selection message = %q", next.(tuiModel).message)
+	}
+}
+
+func TestTUILifecycleActionRunsOutsideUpdate(t *testing.T) {
+	started := false
+	m := tuiModel{list: func() []task.Snapshot { return []task.Snapshot{{ID: "demo"}} }, tasks: []task.Snapshot{{ID: "demo"}}, stop: func(task.TaskID) error { started = true; return nil }}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	m = next.(tuiModel)
+	if started || cmd == nil || m.message != "stop demo..." {
+		t.Fatalf("action ran in Update: started=%t message=%q cmd=%t", started, m.message, cmd != nil)
+	}
+	next, duplicate := m.Update(tea.KeyPressMsg{Code: 's', Text: "s"})
+	m = next.(tuiModel)
+	if duplicate != nil || m.message != "another action is still running" {
+		t.Fatalf("duplicate action not blocked: cmd=%t message=%q", duplicate != nil, m.message)
+	}
+	msg := cmd()
+	if !started {
+		t.Fatal("scheduled action did not run")
+	}
+	next, _ = m.Update(msg)
+	if got := next.(tuiModel).message; got != "stop demo" {
+		t.Fatalf("completion message = %q", got)
 	}
 }
 
@@ -215,5 +259,14 @@ func TestTUIValidationReportsTruncatedOutput(t *testing.T) {
 	m = next.(tuiModel)
 	if !strings.Contains(m.message, "stdout truncated (123 bytes omitted)") || !strings.Contains(m.message, "stderr truncated (45 bytes omitted)") {
 		t.Fatalf("validation message = %q", m.message)
+	}
+}
+
+func TestTUIReadReportsDroppedOutput(t *testing.T) {
+	m := tuiModel{}
+	next, _ := m.Update(agentReadMsg{id: "demo", out: "recent", dropped: 4096})
+	m = next.(tuiModel)
+	if !strings.Contains(m.message, "4096 earlier output bytes were dropped") || m.agentOutput != "recent" {
+		t.Fatalf("read status=%q output=%q", m.message, m.agentOutput)
 	}
 }

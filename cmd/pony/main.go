@@ -439,6 +439,9 @@ func readAgent(mgr *agent.Manager, id agent.AgentID) {
 			fmt.Println()
 		}
 	}
+	if dropped := mgr.OutputDroppedBytes(id); dropped > 0 {
+		fmt.Fprintf(os.Stderr, "read: %d earlier output bytes were dropped from the recent-output buffer\n", dropped)
+	}
 
 	if readErr != nil {
 		fmt.Println("read:", readErr)

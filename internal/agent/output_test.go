@@ -119,6 +119,9 @@ func TestOutputBufferDropsOldestWhenFull(t *testing.T) {
 	if string(got[:n]) != strings.Repeat("b", limit) {
 		t.Error("overflow did not discard the oldest bytes; the newest must survive")
 	}
+	if dropped := o.droppedBytes(); dropped != limit {
+		t.Fatalf("dropped byte count = %d, want %d", dropped, limit)
+	}
 }
 
 func TestOutputBufferStaysBoundedUnderAFlood(t *testing.T) {

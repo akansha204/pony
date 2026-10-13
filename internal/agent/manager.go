@@ -210,6 +210,17 @@ func (m *Manager) sessionOutput(id AgentID) *outputBuffer {
 	return s.out
 }
 
+// OutputDroppedBytes reports how many older terminal-output bytes were evicted.
+func (m *Manager) OutputDroppedBytes(id AgentID) uint64 {
+	m.mu.Lock()
+	out := m.sessionOutput(id)
+	m.mu.Unlock()
+	if out == nil {
+		return 0
+	}
+	return out.droppedBytes()
+}
+
 func (m *Manager) runningHandle(id AgentID) *driver.Handle {
 	a := m.agents[id]
 	if a == nil {

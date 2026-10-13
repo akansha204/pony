@@ -849,17 +849,17 @@ Checklist:
 -   [x] child processes are cleaned up
 -   [x] session identity is independent of PID
 -   [x] generations protect against stale process events
--   [ ] one driver abstraction exists
--   [ ] one PTY driver works
--   [ ] terminal input/output works
--   [ ] terminal resize works
+-   [x] one driver abstraction exists
+-   [x] one PTY driver works
+-   [x] terminal input/output works
+-   [x] terminal resize works
 -   [x] agents can run in isolated Git worktrees
--   [ ] tasks are separate from sessions
--   [ ] lifecycle events are observable
--   [ ] validation is deterministic
--   [ ] execution status and verification status are separate
+-   [x] tasks are separate from sessions
+-   [x] lifecycle events are observable
+-   [x] validation is deterministic
+-   [x] execution status and verification status are separate
 -   [x] end-to-end `pony run` works
--   [ ] `go test -race ./...` passes
+-   [x] `go test -race ./...` passes locally (`make check`)
 -   [ ] CI is green
 
 ------------------------------------------------------------------------

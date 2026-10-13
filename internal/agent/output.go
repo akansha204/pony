@@ -9,11 +9,12 @@ const defaultOutputLimit = 64 << 10
 
 // outputBuffer retains recent output without blocking the agent.
 type outputBuffer struct {
-	mu     sync.Mutex
-	buf    []byte
-	limit  int
-	closed bool
-	notify chan struct{}
+	mu      sync.Mutex
+	buf     []byte
+	limit   int
+	dropped uint64
+	closed  bool
+	notify  chan struct{}
 }
 
 func newOutputBuffer(limit int) *outputBuffer {
@@ -40,11 +41,18 @@ func (o *outputBuffer) write(data []byte) {
 
 	o.buf = append(o.buf, data...)
 	if extra := len(o.buf) - o.limit; extra > 0 {
+		o.dropped += uint64(extra)
 		copy(o.buf, o.buf[extra:])
 		o.buf = o.buf[:o.limit]
 	}
 
 	o.signalLocked()
+}
+
+func (o *outputBuffer) droppedBytes() uint64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.dropped
 }
 
 func (o *outputBuffer) close() {

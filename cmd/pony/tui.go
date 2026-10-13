@@ -25,10 +25,16 @@ type validationMsg struct {
 	err      error
 }
 
+type taskActionMsg struct {
+	action, id string
+	err        error
+}
+
 type agentReadMsg struct {
-	id  agent.AgentID
-	out string
-	err error
+	id      agent.AgentID
+	out     string
+	dropped uint64
+	err     error
 }
 
 type updateCheckMsg struct {
@@ -69,6 +75,7 @@ type tuiModel struct {
 	updateVer        string
 	updateNotice     string
 	updateFailed     bool
+	actionPending    bool
 }
 
 func newTUIModel(a *app) tuiModel {
@@ -171,11 +178,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reload()
 			m.message = "refreshed"
 		case "s":
-			m.applySelected("stop", m.stop)
+			return m, m.applySelected("stop", m.stop)
 		case "R":
-			m.applySelected("restart", m.restart)
+			return m, m.applySelected("restart", m.restart)
 		case "c":
-			m.applySelected("clean", m.clean)
+			return m, m.applySelected("clean", m.clean)
 		case "v":
 			return m, m.validateSelected()
 		case "u":
@@ -208,6 +215,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case taskActionMsg:
+		m.actionPending = false
+		if msg.err != nil {
+			m.message = msg.action + " " + msg.id + ": " + msg.err.Error()
+		} else {
+			m.message = msg.action + " " + msg.id
+		}
+		m.reload()
+		m.refreshAgents()
 	case agentReadMsg:
 		if msg.err != nil {
 			m.message = "read " + string(msg.id) + ": " + msg.err.Error()
@@ -217,6 +233,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentOutput = ""
 		} else {
 			m.message = "read " + string(msg.id)
+			if msg.dropped > 0 {
+				m.message += fmt.Sprintf("; %d earlier output bytes were dropped", msg.dropped)
+			}
 			m.agentOutput = msg.out
 		}
 	case updateCheckMsg:
@@ -260,25 +279,40 @@ func (m *tuiModel) validateSelected() tea.Cmd {
 	}
 }
 
-func (m *tuiModel) applySelected(action string, fn func(task.TaskID) error) {
+func (m *tuiModel) applySelected(action string, fn func(task.TaskID) error) tea.Cmd {
+	if m.actionPending {
+		m.message = "another action is still running"
+		return nil
+	}
 	if len(m.tasks) == 0 {
 		m.message = "no task selected"
-		return
+		return nil
 	}
 	id := m.tasks[m.selected].ID
 	if fn == nil {
 		m.message = action + ": not available"
-		return
+		return nil
 	}
-	if err := fn(id); err != nil {
-		m.message = action + " " + string(id) + ": " + err.Error()
-		return
+	m.message = action + " " + string(id) + "..."
+	m.actionPending = true
+	return func() tea.Msg { return taskActionMsg{action: action, id: string(id), err: fn(id)} }
+}
+
+func (m *tuiModel) runAction(action, id string, fn func() error) tea.Cmd {
+	if m.actionPending {
+		m.message = "another action is still running"
+		return nil
 	}
-	m.message = action + " " + string(id)
-	m.reload()
+	m.actionPending = true
+	return func() tea.Msg { return taskActionMsg{action: action, id: id, err: fn()} }
 }
 
 func (m *tuiModel) submit() tea.Cmd {
+	if m.actionPending {
+		m.message = "another action is still running"
+		m.command = ""
+		return nil
+	}
 	fields, err := shell_lexer.Fields(m.command)
 	var cmd tea.Cmd
 	if err != nil {
@@ -293,13 +327,17 @@ func (m *tuiModel) submit() tea.Cmd {
 			var opts runOptions
 			opts, err = parseRun(fields[1:])
 			if err == nil {
-				err = m.run(opts)
+				if m.run == nil {
+					err = errors.New("not available")
+				} else {
+					run := m.run
+					id := string(opts.id)
+					m.message = "starting " + id + "..."
+					cmd = m.runAction("started", id, func() error { return run(opts) })
+				}
 			}
 			if err != nil {
 				m.message = "run: " + err.Error()
-			} else {
-				m.message = "started " + string(opts.id)
-				m.reload()
 			}
 		case "start":
 			if len(fields) < 3 {
@@ -309,14 +347,10 @@ func (m *tuiModel) submit() tea.Cmd {
 			} else if m.agentsAPI == nil {
 				m.message = "start: not available"
 			} else {
-				var snap agent.SessionSnapshot
-				snap, err = m.agentsAPI.Start(agent.AgentSpec{ID: agent.AgentID(fields[1]), Command: fields[2], Args: fields[3:]})
-				if err != nil {
-					m.message = "start: " + err.Error()
-				} else {
-					m.message = fmt.Sprintf("started %s pid=%d state=%s", snap.AgentID, snap.PID, snap.State)
-					m.refreshAgents()
-				}
+				agents := m.agentsAPI
+				spec := agent.AgentSpec{ID: agent.AgentID(fields[1]), Command: fields[2], Args: append([]string(nil), fields[3:]...)}
+				m.message = "starting " + fields[1] + "..."
+				cmd = m.runAction("started", fields[1], func() error { _, err := agents.Start(spec); return err })
 			}
 		case "send":
 			if len(fields) < 3 {
@@ -341,8 +375,8 @@ func (m *tuiModel) submit() tea.Cmd {
 				m.message = "reading " + fields[1] + "..."
 				mgr, id := m.agentsAPI, agent.AgentID(fields[1])
 				cmd = func() tea.Msg {
-					out, err := readAgentOutput(mgr, id)
-					return agentReadMsg{id: id, out: out, err: err}
+					out, dropped, err := readAgentOutput(mgr, id)
+					return agentReadMsg{id: id, out: out, dropped: dropped, err: err}
 				}
 			}
 		case "attach":
@@ -376,11 +410,11 @@ func (m *tuiModel) submit() tea.Cmd {
 				m.message = "usage: clean <task-id>"
 			} else if m.clean == nil {
 				m.message = "clean: not available"
-			} else if err = m.clean(task.TaskID(fields[1])); err != nil {
-				m.message = "clean: " + err.Error()
 			} else {
-				m.message = "clean " + fields[1]
-				m.reload()
+				id := task.TaskID(fields[1])
+				clean := m.clean
+				m.message = "clean " + fields[1] + "..."
+				cmd = m.runAction("clean", fields[1], func() error { return clean(id) })
 			}
 		case "validate":
 			if len(fields) != 2 {
@@ -412,30 +446,23 @@ func (m *tuiModel) submit() tea.Cmd {
 				}
 				if fn == nil {
 					m.message = fields[0] + ": not available"
-				} else if err = fn(task.TaskID(id)); err != nil {
-					m.message = fields[0] + ": " + err.Error()
 				} else {
-					m.message = fields[0] + " " + id
-					m.reload()
+					taskID := task.TaskID(id)
+					m.message = fields[0] + " " + id + "..."
+					cmd = m.runAction(fields[0], id, func() error { return fn(taskID) })
 				}
 			} else if m.agentsAPI == nil {
 				m.message = fields[0] + ": not available"
-			} else if fields[0] == "stop" {
-				err = m.agentsAPI.Stop(agent.AgentID(id))
-				if err == nil {
-					m.message = "stopped " + id
-					m.refreshAgents()
-				} else {
-					m.message = "stop: " + err.Error()
-				}
 			} else {
-				err = m.agentsAPI.Restart(agent.AgentID(id))
-				if err == nil {
-					m.message = "restarted " + id
-					m.refreshAgents()
-				} else {
-					m.message = "restart: " + err.Error()
-				}
+				agents := m.agentsAPI
+				agentID, action := agent.AgentID(id), fields[0]
+				m.message = action + " " + id + "..."
+				cmd = m.runAction(action, id, func() error {
+					if action == "stop" {
+						return agents.Stop(agentID)
+					}
+					return agents.Restart(agentID)
+				})
 			}
 		case "quit", "exit":
 			return tea.Quit
@@ -479,7 +506,7 @@ func (m *tuiModel) startUpdate() tea.Cmd {
 	}
 }
 
-func readAgentOutput(mgr *agent.Manager, id agent.AgentID) (string, error) {
+func readAgentOutput(mgr *agent.Manager, id agent.AgentID) (string, uint64, error) {
 	const chunkWait = 200 * time.Millisecond
 	buf := make([]byte, 4096)
 	var out strings.Builder
@@ -491,15 +518,15 @@ func readAgentOutput(mgr *agent.Manager, id agent.AgentID) (string, error) {
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return out.String(), nil
+				return out.String(), mgr.OutputDroppedBytes(id), nil
 			}
-			return out.String(), err
+			return out.String(), mgr.OutputDroppedBytes(id), err
 		}
 		if n == 0 {
 			break
 		}
 	}
-	return out.String(), nil
+	return out.String(), mgr.OutputDroppedBytes(id), nil
 }
 
 func (m tuiModel) taskByID(id task.TaskID) (task.Snapshot, bool) {

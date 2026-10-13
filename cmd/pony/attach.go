@@ -40,6 +40,9 @@ func attachWithIO(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-
 	if running(mgr, id) != agent.StateRunning {
 		return fmt.Errorf("agent %q has no running session", id)
 	}
+	if dropped := mgr.OutputDroppedBytes(id); dropped > 0 {
+		_, _ = fmt.Fprintf(out, "[pony: %d earlier output bytes were dropped from the recent-output buffer]\r\n", dropped)
+	}
 	return withRawTerminal(in, func() error {
 		return bridgeTerminal(mgr, id, in, out, sig)
 	})
