@@ -136,6 +136,12 @@ func main() {
 				if result.Stderr != "" {
 					fmt.Fprint(os.Stderr, result.Stderr)
 				}
+				if result.StdoutDroppedBytes > 0 {
+					fmt.Fprintf(os.Stderr, "step %d: stdout truncated; %d bytes omitted\n", i+1, result.StdoutDroppedBytes)
+				}
+				if result.StderrDroppedBytes > 0 {
+					fmt.Fprintf(os.Stderr, "step %d: stderr truncated; %d bytes omitted\n", i+1, result.StderrDroppedBytes)
+				}
 			}
 			if err != nil {
 				fmt.Println("validate:", err)

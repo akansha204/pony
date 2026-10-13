@@ -51,6 +51,31 @@ func TestRunnerCapturesNonzeroExit(t *testing.T) {
 	}
 }
 
+func TestRunnerBoundsCapturedOutputAndCountsDroppedBytes(t *testing.T) {
+	const emitted = 20 << 20
+	result, err := NewRunner().Run(t.TempDir(), Step{
+		Command: "sh",
+		Args:    []string{"-c", `head -c 20971520 /dev/zero | tr '\000' x; head -c 20971520 /dev/zero | tr '\000' y >&2`},
+		Timeout: 15 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.Succeeded() {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Stdout) != maxValidationStreamBytes || len(result.Stderr) != maxValidationStreamBytes {
+		t.Fatalf("captured output sizes = stdout %d, stderr %d; want %d each", len(result.Stdout), len(result.Stderr), maxValidationStreamBytes)
+	}
+	wantDropped := int64(emitted - maxValidationStreamBytes)
+	if result.StdoutDroppedBytes != wantDropped || result.StderrDroppedBytes != wantDropped {
+		t.Fatalf("dropped bytes = stdout %d, stderr %d; want %d each", result.StdoutDroppedBytes, result.StderrDroppedBytes, wantDropped)
+	}
+	if strings.Trim(result.Stdout, "x") != "" || strings.Trim(result.Stderr, "y") != "" {
+		t.Fatal("captured output does not contain the expected prefixes")
+	}
+}
+
 func TestRunnerRejectsInvalidInput(t *testing.T) {
 	runner := NewRunner()
 	if _, err := runner.Run(t.TempDir(), Step{Command: "sh"}); err == nil {

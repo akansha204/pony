@@ -14,9 +14,28 @@ import (
 type Runner struct{}
 
 const (
-	validationWaitDelay = 2 * time.Second
-	terminationWait     = 3 * time.Second
+	validationWaitDelay      = 2 * time.Second
+	terminationWait          = 3 * time.Second
+	maxValidationStreamBytes = 1 << 20
 )
+
+type boundedCapture struct {
+	buf     bytes.Buffer
+	limit   int
+	dropped int64
+}
+
+func (c *boundedCapture) Write(p []byte) (int, error) {
+	room := c.limit - c.buf.Len()
+	if room > len(p) {
+		room = len(p)
+	}
+	if room > 0 {
+		_, _ = c.buf.Write(p[:room])
+	}
+	c.dropped += int64(len(p) - room)
+	return len(p), nil
+}
 
 func NewRunner() *Runner {
 	return &Runner{}
@@ -47,9 +66,10 @@ func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result,
 	// A descendant may inherit stdout/stderr and keep os/exec's copy
 	// goroutines open after the command exits. Bound that wait as well.
 	cmd.WaitDelay = validationWaitDelay
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &boundedCapture{limit: maxValidationStreamBytes}
+	stderr := &boundedCapture{limit: maxValidationStreamBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -67,8 +87,7 @@ func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result,
 	select {
 	case err := <-done:
 		result.Duration = time.Since(started)
-		result.Stdout = stdout.String()
-		result.Stderr = stderr.String()
+		setCapturedOutput(&result, stdout, stderr)
 		if err == nil {
 			result.ExitCode = 0
 			return result, nil
@@ -82,9 +101,9 @@ func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result,
 
 	case <-timer.C:
 		result.TimedOut = true
-		return terminateGroup(cmd, done, started, &stdout, &stderr, result)
+		return terminateGroup(cmd, done, started, stdout, stderr, result)
 	case <-ctx.Done():
-		result, err := terminateGroup(cmd, done, started, &stdout, &stderr, result)
+		result, err := terminateGroup(cmd, done, started, stdout, stderr, result)
 		if err != nil {
 			return result, errors.Join(ctx.Err(), err)
 		}
@@ -92,14 +111,13 @@ func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result,
 	}
 }
 
-func terminateGroup(cmd *exec.Cmd, done <-chan error, started time.Time, stdout, stderr *bytes.Buffer, result Result) (Result, error) {
+func terminateGroup(cmd *exec.Cmd, done <-chan error, started time.Time, stdout, stderr *boundedCapture, result Result) (Result, error) {
 	killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	var waitErr error
 	select {
 	case waitErr = <-done:
 		result.Duration = time.Since(started)
-		result.Stdout = stdout.String()
-		result.Stderr = stderr.String()
+		setCapturedOutput(&result, stdout, stderr)
 	case <-time.After(terminationWait):
 		// Do not read stdout/stderr here: cmd.Wait may still have copy
 		// goroutines writing to them.
@@ -116,6 +134,13 @@ func terminateGroup(cmd *exec.Cmd, done <-chan error, started time.Time, stdout,
 		}
 	}
 	return result, nil
+}
+
+func setCapturedOutput(result *Result, stdout, stderr *boundedCapture) {
+	result.Stdout = stdout.buf.String()
+	result.Stderr = stderr.buf.String()
+	result.StdoutDroppedBytes = stdout.dropped
+	result.StderrDroppedBytes = stderr.dropped
 }
 
 func cloneStep(step Step) Step {

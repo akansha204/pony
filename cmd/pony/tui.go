@@ -200,6 +200,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if result.TimedOut {
 					m.message += " timed out"
 				}
+				if result.StdoutDroppedBytes > 0 {
+					m.message += fmt.Sprintf("; stdout truncated (%d bytes omitted)", result.StdoutDroppedBytes)
+				}
+				if result.StderrDroppedBytes > 0 {
+					m.message += fmt.Sprintf("; stderr truncated (%d bytes omitted)", result.StderrDroppedBytes)
+				}
 			}
 		}
 	case agentReadMsg:

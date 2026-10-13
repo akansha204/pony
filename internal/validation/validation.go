@@ -13,12 +13,14 @@ type Step struct {
 }
 
 type Result struct {
-	Step     Step
-	ExitCode int
-	Stdout   string
-	Stderr   string
-	Duration time.Duration
-	TimedOut bool
+	Step               Step
+	ExitCode           int
+	Stdout             string
+	Stderr             string
+	StdoutDroppedBytes int64
+	StderrDroppedBytes int64
+	Duration           time.Duration
+	TimedOut           bool
 }
 
 func (s Step) Validate() error {

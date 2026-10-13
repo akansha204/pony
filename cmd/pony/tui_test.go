@@ -14,6 +14,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/akansha204/pony/internal/task"
+	"github.com/akansha204/pony/internal/validation"
 )
 
 func TestTUIEmptyAndNavigation(t *testing.T) {
@@ -200,5 +201,19 @@ func TestTUIStylesAndCompactLayout(t *testing.T) {
 	m.width, m.height = 80, 12
 	if strings.Contains(ansi.Strip(m.View().Content), " ____   ___") {
 		t.Fatal("wordmark did not collapse on a short terminal")
+	}
+}
+
+func TestTUIValidationReportsTruncatedOutput(t *testing.T) {
+	m := tuiModel{list: func() []task.Snapshot { return nil }}
+	next, _ := m.Update(validationMsg{
+		snapshot: task.Snapshot{ID: "demo"},
+		results: []validation.Result{{
+			ExitCode: 0, StdoutDroppedBytes: 123, StderrDroppedBytes: 45,
+		}},
+	})
+	m = next.(tuiModel)
+	if !strings.Contains(m.message, "stdout truncated (123 bytes omitted)") || !strings.Contains(m.message, "stderr truncated (45 bytes omitted)") {
+		t.Fatalf("validation message = %q", m.message)
 	}
 }
