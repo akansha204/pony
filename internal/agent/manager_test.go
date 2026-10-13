@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akansha204/pony/internal/detect"
 	"github.com/akansha204/pony/internal/driver"
+	"github.com/akansha204/pony/internal/screen"
 )
 
 func processAlive(pid int) bool {
@@ -71,6 +73,31 @@ func TestStartSpawnsRealProcess(t *testing.T) {
 	}
 	if !processAlive(snap.PID) {
 		t.Fatalf("process %d is not alive", snap.PID)
+	}
+}
+
+func TestSnapshotsClassifiesKnownAgentFromVisibleScreen(t *testing.T) {
+	m := NewManager(driver.NewPTYDriver())
+	m.profiles = detect.NewProfileStore(filepath.Join("..", "..", "profiles", "agents"))
+	s := &session{
+		ID:         "sess-test",
+		State:      StateRunning,
+		AgentState: AgentStateUnknown,
+		agentKind:  AgentKindCodex,
+		screen:     screen.New(4, 40, 8),
+	}
+	s.screen.Feed([]byte("Thinking..."))
+	m.agents["demo"] = &agent{spec: AgentSpec{ID: "demo"}, sessionID: s.ID, session: s}
+
+	snapshots := m.Snapshots()
+	if len(snapshots) != 1 {
+		t.Fatalf("Snapshots() returned %d sessions, want 1", len(snapshots))
+	}
+	if snapshots[0].AgentState != AgentStateWorking {
+		t.Fatalf("AgentState = %q, want working", snapshots[0].AgentState)
+	}
+	if snapshots[0].State != StateRunning {
+		t.Fatalf("runtime State = %q, want running", snapshots[0].State)
 	}
 }
 

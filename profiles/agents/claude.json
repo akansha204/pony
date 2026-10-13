@@ -1,0 +1,8 @@
+{
+  "kind": "claude",
+  "rules": [
+    { "state": "blocked", "contains": ["do you want to proceed", "yes, allow once", "approve this"] },
+    { "state": "working", "contains": ["esc to interrupt", "thinking", "working"] },
+    { "state": "idle", "regex": ["^\\s*[›❯>]\\s*$"] }
+  ]
+}

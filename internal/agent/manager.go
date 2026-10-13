@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/akansha204/pony/internal/detect"
 	"github.com/akansha204/pony/internal/driver"
 	"github.com/akansha204/pony/internal/screen"
 )
@@ -17,11 +20,13 @@ type Manager struct {
 	mu          sync.Mutex
 	agents      map[AgentID]*agent
 	driver      driver.Driver
+	profiles    *detect.ProfileStore
 	nextSession uint64
 }
 
 const stopSettle = 2 * time.Second
 const identityRefreshInterval = 500 * time.Millisecond
+const stateRefreshInterval = 500 * time.Millisecond
 
 type foregroundGroupReader interface {
 	ForegroundProcessGroup(*driver.Handle) (int, error)
@@ -33,10 +38,39 @@ type foregroundCheck struct {
 	session   *session
 	handle    *driver.Handle
 	sessionID int
+	model     *screen.Model
+	kind      AgentKind
+	identity  bool
 }
 
 func NewManager(d driver.Driver) *Manager {
-	return &Manager{agents: make(map[AgentID]*agent), driver: d}
+	return &Manager{agents: make(map[AgentID]*agent), driver: d, profiles: detect.NewProfileStore(defaultProfileDir())}
+}
+
+func defaultProfileDir() string {
+	if dir := strings.TrimSpace(os.Getenv("PONY_AGENT_PROFILES")); dir != "" {
+		return dir
+	}
+	starts := []string{}
+	if cwd, err := os.Getwd(); err == nil {
+		starts = append(starts, cwd)
+	}
+	if executable, err := os.Executable(); err == nil {
+		starts = append(starts, filepath.Dir(executable))
+	}
+	for _, start := range starts {
+		for dir := start; ; dir = filepath.Dir(dir) {
+			candidate := filepath.Join(dir, "profiles", "agents")
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				return candidate
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+		}
+	}
+	return filepath.Join("profiles", "agents")
 }
 
 func (m *Manager) nextSessionIDLocked() SessionID {
@@ -344,28 +378,43 @@ func (m *Manager) Snapshots() []SessionSnapshot {
 		index := len(out)
 		out = append(out, snapshot)
 		s := a.session
-		if canInspect && s != nil && s.State == StateRunning && s.h != nil && now.Sub(s.identityCheckedAt) >= identityRefreshInterval {
-			s.identityCheckedAt = now
-			checks = append(checks, foregroundCheck{index: index, owner: a, session: s, handle: s.h, sessionID: s.h.PID})
+		if s != nil && s.State == StateRunning && s.screen != nil && now.Sub(s.stateCheckedAt) >= stateRefreshInterval {
+			s.stateCheckedAt = now
+			check := foregroundCheck{index: index, owner: a, session: s, model: s.screen, kind: s.agentKind}
+			if canInspect && s.h != nil && now.Sub(s.identityCheckedAt) >= identityRefreshInterval {
+				s.identityCheckedAt = now
+				check.handle = s.h
+				check.sessionID = s.h.PID
+				check.identity = true
+			}
+			checks = append(checks, check)
 		}
 	}
 	m.mu.Unlock()
 
 	for _, check := range checks {
-		identity := foregroundIdentity{Kind: AgentKindUnknown}
-		if pgid, err := reader.ForegroundProcessGroup(check.handle); err == nil {
-			if found, err := lookupForegroundIdentity("/proc", check.sessionID, pgid); err == nil {
-				identity = found
+		identity := foregroundIdentity{Kind: check.kind}
+		if check.identity {
+			identity.Kind = AgentKindUnknown
+			if pgid, err := reader.ForegroundProcessGroup(check.handle); err == nil {
+				if found, err := lookupForegroundIdentity("/proc", check.sessionID, pgid); err == nil {
+					identity = found
+				}
 			}
 		}
+		state := detect.Unknown
+		if identity.Kind != AgentKindUnknown {
+			state = m.profiles.Classify(string(identity.Kind), check.model.Snapshot())
+		}
 		m.mu.Lock()
-		if check.owner.session == check.session {
-			check.session.foregroundPID = identity.PID
-			check.session.foregroundProcess = identity.Process
-			check.session.agentKind = identity.Kind
-			out[check.index].ForegroundPID = identity.PID
-			out[check.index].ForegroundProcess = identity.Process
-			out[check.index].AgentKind = identity.Kind
+		if check.owner.session == check.session && check.session.State == StateRunning {
+			if check.identity {
+				check.session.foregroundPID = identity.PID
+				check.session.foregroundProcess = identity.Process
+				check.session.agentKind = identity.Kind
+			}
+			check.session.AgentState = AgentState(state)
+			out[check.index] = snapshotOf(check.owner)
 		}
 		m.mu.Unlock()
 	}

@@ -1,0 +1,8 @@
+{
+  "kind": "codex",
+  "rules": [
+    { "state": "blocked", "contains": ["approval required", "approve this command", "allow this action", "y/n"] },
+    { "state": "working", "contains": ["esc to interrupt", "thinking", "working"] },
+    { "state": "idle", "regex": ["^\\s*[›❯>]\\s*$"] }
+  ]
+}

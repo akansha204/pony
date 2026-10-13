@@ -1,6 +1,6 @@
 # Pony — Interactive Agents + State From Output (Plan)
 
-> **Status:** Phases 1–3 implemented; later phases planned.
+> **Status:** Phases 1–4 implemented; later phases planned.
 > This is a follow-on plan, not part of [v1-plan.md](./v1-plan.md).
 
 > Build Pony one systems problem at a time.
@@ -235,6 +235,13 @@ screen tail, using **data**, not code.
 
 -   A profile per agent kind: an ordered set of rules over the screen
     snapshot. Same spirit as herdr's screen manifests, far smaller.
+-   Profiles are JSON files in `profiles/agents/` by default. Set
+    `PONY_AGENT_PROFILES` to use another directory. Pony reloads a
+    profile when its file changes, so rules can be tuned without
+    rebuilding the runtime. A profile has a `kind` and ordered `rules`;
+    each rule has a `state` and one or more `contains` or `regex` tests.
+-   Rules inspect only the last eight non-empty visible screen lines.
+    Scrollback is ignored; an unreliable screen stays `unknown`.
 -   The evaluation pipeline:
 
 ``` text
@@ -252,13 +259,15 @@ foreground process  ─►  known kind?  ──no──►  state = unknown
 
 -   Example (illustrative, not final):
 
-``` text
-kind = "codex"
-rules = [
-  { state = "blocked", when_bottom_contains = ["approve", "allow", "y/n"] },
-  { state = "working", when_bottom_matches  = ["esc to interrupt", "⏳", "Thinking"] },
-  { state = "idle",    when_bottom_matches  = ["^>\\s*$"] },
-]
+``` json
+{
+  "kind": "codex",
+  "rules": [
+    { "state": "blocked", "contains": ["approval required", "allow this action"] },
+    { "state": "working", "contains": ["esc to interrupt", "thinking"] },
+    { "state": "idle", "regex": ["^\\s*[›❯>]\\s*$"] }
+  ]
+}
 ```
 
 ### Invariants
@@ -270,10 +279,10 @@ rules = [
 
 ### Tests
 
--   [ ] A scripted "working" screen classifies as `working`.
--   [ ] A scripted approval screen classifies as `blocked`.
--   [ ] An unrecognized tail classifies as `unknown`.
--   [ ] A profile updates without recompiling the runtime.
+-   [x] A scripted "working" screen classifies as `working`.
+-   [x] A scripted approval screen classifies as `blocked`.
+-   [x] An unrecognized tail classifies as `unknown`.
+-   [x] A profile updates without recompiling the runtime.
 
 ### Done when
 

@@ -81,6 +81,7 @@ type session struct {
 	foregroundProcess string
 	agentKind         AgentKind
 	identityCheckedAt time.Time
+	stateCheckedAt    time.Time
 }
 
 type agent struct {

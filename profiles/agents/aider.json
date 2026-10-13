@@ -1,0 +1,8 @@
+{
+  "kind": "aider",
+  "rules": [
+    { "state": "blocked", "contains": ["apply this change?", "yes/no", "approve this"] },
+    { "state": "working", "contains": ["thinking", "working"] },
+    { "state": "idle", "regex": ["^\\s*>\\s*$"] }
+  ]
+}
