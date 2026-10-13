@@ -302,8 +302,8 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	return res
 }
 
-// Stop escalates SIGTERM to SIGKILL against the whole process group. A
-// cancelled context bounds the wait but never abandons the group half-signalled.
+// Stop escalates SIGTERM to SIGKILL against the whole process group and only
+// succeeds after every live member has exited and the leader has been reaped.
 func (d *ProcessDriver) Stop(ctx context.Context, h *Handle) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -319,23 +319,27 @@ func (d *ProcessDriver) Stop(ctx context.Context, h *Handle) error {
 		return fmt.Errorf("signal process group: %w", err)
 	}
 
-	select {
-	case <-h.done:
-		return nil
-	case <-time.After(grace):
-	case <-ctx.Done():
+	empty, err := waitProcessGroupEmpty(ctx.Done(), h.PID, grace)
+	if err != nil {
+		return fmt.Errorf("wait for process group after SIGTERM: %w", err)
 	}
-
-	if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill process group: %w", err)
+	if !empty {
+		if err := syscall.Kill(pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("kill process group: %w", err)
+		}
+		empty, err = waitProcessGroupEmpty(nil, h.PID, killTimeout)
+		if err != nil {
+			return fmt.Errorf("wait for process group after SIGKILL: %w", err)
+		}
+		if !empty {
+			return fmt.Errorf("process group %d did not terminate after SIGKILL", h.PID)
+		}
 	}
 
 	select {
 	case <-h.done:
 		return nil
 	case <-time.After(killTimeout):
-		return fmt.Errorf("process group %d did not terminate after SIGKILL", h.PID)
-	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("process %d was not reaped after its process group exited", h.PID)
 	}
 }

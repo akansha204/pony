@@ -73,6 +73,70 @@ func sessionProcessGroups(sessionID int) ([]int, error) {
 	return out, nil
 }
 
+func processGroupMembers(pgid int) ([]int, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, fmt.Errorf("scan /proc: %w", err)
+	}
+
+	var members []int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			continue // process exited between ReadDir and ReadFile
+		}
+		stat := string(raw)
+		closeParen := strings.LastIndex(stat, ")")
+		if closeParen < 0 {
+			continue
+		}
+		fields := strings.Fields(stat[closeParen+1:])
+		if len(fields) < 3 || fields[0] == "Z" {
+			continue
+		}
+		memberPGID, err := strconv.Atoi(fields[2])
+		if err == nil && memberPGID == pgid {
+			members = append(members, pid)
+		}
+	}
+	return members, nil
+}
+
+func waitProcessGroupEmpty(ctxDone <-chan struct{}, pgid int, timeout time.Duration) (bool, error) {
+	if timeout <= 0 {
+		members, err := processGroupMembers(pgid)
+		return len(members) == 0, err
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		members, err := processGroupMembers(pgid)
+		if err != nil {
+			return false, err
+		}
+		if len(members) == 0 {
+			return true, nil
+		}
+		select {
+		case <-ctxDone:
+			return false, nil
+		case <-ticker.C:
+		case <-timer.C:
+			members, err := processGroupMembers(pgid)
+			return len(members) == 0, err
+		}
+	}
+}
+
 // signalSessionProcessGroups sends sig to every live group in sessionID.The leader usually has PID == SID == PGID; job-control children add groups.
 func signalSessionProcessGroups(
 	sessionID int,
