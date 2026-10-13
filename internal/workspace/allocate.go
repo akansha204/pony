@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -39,17 +40,17 @@ func (m *Manager) Allocate(spec Spec) (Workspace, error) {
 		workspace.Repository,
 		"worktree", "add", "--", workspace.Path, workspace.Branch,
 	); err != nil {
-		m.rollbackAllocation(workspace, rootCreated)
-		return Workspace{}, fmt.Errorf("allocate workspace %q: %w", workspace.ID, err)
+		rollbackErr := m.rollbackAllocation(workspace, baseCommit, rootCreated)
+		return Workspace{}, errors.Join(fmt.Errorf("allocate workspace %q: %w", workspace.ID, err), rollbackErr)
 	}
 
 	listed, err := m.List(workspace.Repository)
 	if err != nil || !containsWorkspace(listed, workspace) {
-		m.rollbackAllocation(workspace, rootCreated)
+		rollbackErr := m.rollbackAllocation(workspace, baseCommit, rootCreated)
 		if err != nil {
-			return Workspace{}, fmt.Errorf("verify workspace %q: %w", workspace.ID, err)
+			return Workspace{}, errors.Join(fmt.Errorf("verify workspace %q: %w", workspace.ID, err), rollbackErr)
 		}
-		return Workspace{}, fmt.Errorf("verify workspace %q: Git did not report the created worktree", workspace.ID)
+		return Workspace{}, errors.Join(fmt.Errorf("verify workspace %q: Git did not report the created worktree", workspace.ID), rollbackErr)
 	}
 	return workspace, nil
 }
@@ -69,14 +70,78 @@ func ensureDirectory(path string) (bool, error) {
 	return true, nil
 }
 
-func (m *Manager) rollbackAllocation(workspace Workspace, rootCreated bool) {
-	_, _ = gitOutput(workspace.Repository, "worktree", "remove", "--force", "--", workspace.Path)
-	_, _ = gitOutput(workspace.Repository, "worktree", "prune")
-	_, _ = gitOutput(workspace.Repository, "branch", "-D", "--", workspace.Branch)
-	_ = os.RemoveAll(workspace.Path)
-	if rootCreated {
-		_ = os.Remove(m.root)
+func (m *Manager) rollbackAllocation(workspace Workspace, baseCommit string, rootCreated bool) error {
+	listed, err := m.List(workspace.Repository)
+	if err != nil {
+		return fmt.Errorf("inspect allocation rollback: %w", err)
 	}
+	registered := false
+	for _, current := range listed {
+		if current.ID == workspace.ID && current.Managed && samePath(current.Path, workspace.Path) && current.Branch == workspace.Branch {
+			registered = true
+			break
+		}
+	}
+
+	if registered {
+		if err := requireCleanWorktree(workspace.Path); err != nil {
+			return fmt.Errorf("rollback workspace %q: %w", workspace.ID, err)
+		}
+		head, err := resolveCommit(workspace.Path, "HEAD")
+		if err != nil {
+			return fmt.Errorf("inspect workspace %q commit before rollback: %w", workspace.ID, err)
+		}
+		if head != baseCommit {
+			return fmt.Errorf("preserving workspace %q: branch advanced from %s to %s during allocation", workspace.ID, baseCommit, head)
+		}
+		if _, err := gitOutput(workspace.Repository, "worktree", "remove", "--", workspace.Path); err != nil {
+			return fmt.Errorf("rollback workspace %q: %w", workspace.ID, err)
+		}
+	} else if info, err := os.Lstat(workspace.Path); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("preserving allocation path %q: expected an empty directory, found another file type", workspace.Path)
+		}
+		entries, err := os.ReadDir(workspace.Path)
+		if err != nil {
+			return fmt.Errorf("inspect allocation path %q: %w", workspace.Path, err)
+		}
+		if len(entries) != 0 {
+			return fmt.Errorf("preserving allocation path %q: it contains unexpected files", workspace.Path)
+		}
+		if err := os.Remove(workspace.Path); err != nil {
+			return fmt.Errorf("remove empty allocation path %q: %w", workspace.Path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect allocation path %q: %w", workspace.Path, err)
+	}
+
+	branchExists, err := branchExists(workspace.Repository, workspace.Branch)
+	if err != nil {
+		return fmt.Errorf("inspect allocation branch %q: %w", workspace.Branch, err)
+	}
+	if branchExists {
+		for _, current := range listed {
+			if current.Branch == workspace.Branch && !samePath(current.Path, workspace.Path) {
+				return fmt.Errorf("preserving branch %q: it is checked out at %q", workspace.Branch, current.Path)
+			}
+		}
+		branchCommit, err := resolveCommit(workspace.Repository, "refs/heads/"+workspace.Branch)
+		if err != nil {
+			return fmt.Errorf("inspect allocation branch %q: %w", workspace.Branch, err)
+		}
+		if branchCommit != baseCommit {
+			return fmt.Errorf("preserving branch %q: it advanced from %s to %s during allocation", workspace.Branch, baseCommit, branchCommit)
+		}
+		if _, err := gitOutput(workspace.Repository, "update-ref", "-d", "refs/heads/"+workspace.Branch, baseCommit); err != nil {
+			return fmt.Errorf("remove unused allocation branch %q: %w", workspace.Branch, err)
+		}
+	}
+	if rootCreated {
+		if err := os.Remove(m.root); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("remove empty workspace root %q: %w", m.root, err)
+		}
+	}
+	return nil
 }
 
 func containsWorkspace(workspaces []Workspace, want Workspace) bool {

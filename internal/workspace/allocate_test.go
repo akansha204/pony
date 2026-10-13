@@ -117,3 +117,62 @@ func TestAllocateRollsBackFailedCheckout(t *testing.T) {
 		t.Fatalf("failed worktree metadata remains: %+v", listed)
 	}
 }
+
+func TestAllocatePreservesHookCreatedFilesOnRollback(t *testing.T) {
+	repo := testRepository(t)
+	hook := filepath.Join(repo, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'keep me\\n' > hook-produced.txt\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+	root := filepath.Join(t.TempDir(), "workspaces")
+	m, _ := NewManager(root)
+
+	workspace, err := m.Allocate(Spec{TaskID: "hook-data", Repository: repo, BaseRef: "main"})
+	if err == nil {
+		t.Fatalf("Allocate succeeded: %+v", workspace)
+	}
+	if !strings.Contains(err.Error(), "preserving it") {
+		t.Fatalf("Allocate error does not explain preserved data: %v", err)
+	}
+	path := filepath.Join(root, "hook-data")
+	contents, readErr := os.ReadFile(filepath.Join(path, "hook-produced.txt"))
+	if readErr != nil {
+		t.Fatalf("hook-created file was removed: %v", readErr)
+	}
+	if string(contents) != "keep me\n" {
+		t.Fatalf("hook-created file contents = %q, want preserved contents", contents)
+	}
+	if branch := strings.TrimSpace(run(t, repo, "git", "branch", "--show-current")); branch != "main" {
+		t.Fatalf("repository branch changed = %q, want main", branch)
+	}
+	if out := run(t, repo, "git", "branch", "--list", "pony/hook-data"); strings.TrimSpace(out) == "" {
+		t.Fatal("branch for preserved hook-created workspace was deleted")
+	}
+}
+
+func TestAllocatePreservesHookAdvancedBranchOnRollback(t *testing.T) {
+	repo := testRepository(t)
+	run(t, repo, "git", "config", "user.name", "Pony Test")
+	run(t, repo, "git", "config", "user.email", "pony@example.test")
+	hook := filepath.Join(repo, ".git", "hooks", "post-checkout")
+	contents := "#!/bin/sh\nprintf 'hook commit\\n' > hook-commit.txt\ngit add hook-commit.txt\ngit commit -m 'hook commit'\nexit 1\n"
+	if err := os.WriteFile(hook, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+	root := filepath.Join(t.TempDir(), "workspaces")
+	m, _ := NewManager(root)
+
+	workspace, err := m.Allocate(Spec{TaskID: "hook-commit", Repository: repo, BaseRef: "main"})
+	if err == nil {
+		t.Fatalf("Allocate succeeded: %+v", workspace)
+	}
+	path := filepath.Join(root, "hook-commit")
+	if _, statErr := os.Stat(filepath.Join(path, "hook-commit.txt")); statErr != nil {
+		t.Fatalf("hook commit was removed: %v", statErr)
+	}
+	branch := strings.TrimSpace(run(t, repo, "git", "rev-parse", "refs/heads/pony/hook-commit"))
+	head := strings.TrimSpace(run(t, path, "git", "rev-parse", "HEAD"))
+	if branch != head {
+		t.Fatalf("preserved branch = %s, workspace HEAD = %s", branch, head)
+	}
+}
