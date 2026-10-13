@@ -74,6 +74,9 @@ func main() {
 		}
 
 		switch fields[0] {
+		case "help":
+			printCLIHelp()
+
 		case "run":
 			opts, err := parseRun(fields[1:])
 			if err != nil {
@@ -262,13 +265,45 @@ func main() {
 			return
 
 		default:
-			fmt.Println("commands: run | list | attach <id> | stop <id> | restart <id> | validate <id> | clean <id> | start <id> <cmd> [args...] | send <id> <text> | read <id> | resize <id> <rows> <cols> | status | quit")
+			fmt.Println("unknown command; type help for usage")
 		}
 
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 	}
+}
+
+func printCLIHelp() {
+	fmt.Println(`Pony CLI help
+
+Task commands:
+  run --id ID --goal TEXT --repo PATH --command CMD [--arg ARG] --validate COMMAND
+      Start a coding task in its own Git worktree. The goal is sent to the agent;
+      validation commands run after a clean exit. Repeat --validate to add checks.
+  list                         List tasks and their states
+  attach <id>                  Interact with a running task; Ctrl+\\ detaches
+  stop <id>                    Stop a task without validating it
+  restart <id>                 Restart a task in its existing worktree
+  validate <id>                Run the task's validation commands
+  clean <id>                   Release a stopped task's clean worktree
+
+Agent session commands:
+  start <id> <cmd> [args...]   Start a named interactive program session
+  send <id> <text>             Send text followed by Enter
+  read <id>                    Show buffered terminal output
+  attach <id>                  Type directly into a running session; Ctrl+\\ detaches
+  resize <id> <rows> <cols>    Set a session's terminal size
+  status                       Show agent process IDs and runtime states
+  stop <id> / restart <id>     Stop or restart a named agent session
+
+General:
+  help                         Show this guide
+  quit                         Stop running agents and exit Pony
+
+For the screen-based task list, run Pony without --cli in an interactive terminal.
+In the TUI, press ? for help, : to enter a run command, j/k or arrows to select,
+s to stop, R to restart, c to clean, r to refresh, and q to quit.`)
 }
 
 type lineReader struct {

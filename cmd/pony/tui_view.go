@@ -41,7 +41,7 @@ func renderTUI(m tuiModel) string {
 	}
 	fmt.Fprintf(&b, "%s  %s\n\n", accentStyle.Render("PONY"), mutedStyle.Render(fmt.Sprintf("tasks  %d", len(m.tasks))))
 	if len(m.tasks) == 0 {
-		b.WriteString("No tasks in this session. Press : to run one.\n")
+		b.WriteString("No tasks in this session. Press : to run one, or ? for help.\n")
 	} else {
 		start, limit := visibleTasks(m, compact, showWordmark)
 		for i := start; i < len(m.tasks) && i < start+limit; i++ {
@@ -79,9 +79,44 @@ func renderTUI(m tuiModel) string {
 	if m.editing {
 		b.WriteString("\n" + accentStyle.Render(":") + " " + ansi.Truncate(safeText(m.command), max(1, contentWidth-4), "…") + "\n")
 	} else {
-		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
+		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  ? help  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
 	}
 	return b.String()
+}
+
+func renderTUIHelp(m tuiModel) string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	contentWidth := max(1, width-2)
+	lines := []string{
+		"PONY HELP",
+		"",
+		"Start a coding task",
+		"  Press : and enter a run command, for example:",
+		`  run --id demo --goal "Fix the bug" --repo /path/to/repo --command codex --validate "go test ./..."`,
+		"  Pony creates a Git worktree, starts the agent there, and checks it after a clean exit.",
+		"",
+		"Task list keys",
+		"  j / ↓       Select the next task",
+		"  k / ↑       Select the previous task",
+		"  s           Stop the selected task",
+		"  R           Restart it in its worktree",
+		"  c           Clean a stopped task's clean worktree",
+		"  r           Refresh the task list",
+		"  q           Quit Pony (running agents are stopped)",
+		"",
+		"More commands are available in the CLI: pony --cli, then type help.",
+		"The CLI supports validate and agent sessions (start, send, read, attach, resize, status).",
+		"",
+		"Press ?, Esc, Enter, or q to return.",
+	}
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(ansi.Truncate(line, contentWidth, "…") + "\n")
+	}
+	return panelStyle.Render(b.String())
 }
 
 func isSuccessMessage(message string) bool {

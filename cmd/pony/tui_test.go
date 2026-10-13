@@ -34,6 +34,25 @@ func TestTUIEmptyAndNavigation(t *testing.T) {
 	}
 }
 
+func TestTUIHelpKeyAndCommand(t *testing.T) {
+	m := tuiModel{}
+	next, _ := m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+	m = next.(tuiModel)
+	if !m.showHelp || !strings.Contains(ansi.Strip(m.View().Content), "Start a coding task") {
+		t.Fatalf("help key did not show help: %+v", m)
+	}
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = next.(tuiModel)
+	if m.showHelp {
+		t.Fatal("Esc did not close help")
+	}
+	m.command = "help"
+	m.submit()
+	if !m.showHelp {
+		t.Fatal("help command did not show help")
+	}
+}
+
 func TestTUIStartsInTerminal(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$")
 	cmd.Env = append(os.Environ(), "PONY_TUI_TEST_HELPER=1", "XDG_DATA_HOME="+t.TempDir())

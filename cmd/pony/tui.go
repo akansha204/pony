@@ -25,6 +25,7 @@ type tuiModel struct {
 	editing  bool
 	command  string
 	message  string
+	showHelp bool
 }
 
 func newTUIModel(a *app) tuiModel {
@@ -58,6 +59,13 @@ func scheduleRefresh() tea.Cmd {
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		if m.showHelp {
+			switch msg.String() {
+			case "?", "esc", "q", "enter":
+				m.showHelp = false
+			}
+			return m, nil
+		}
 		if m.editing {
 			switch msg.String() {
 			case "enter":
@@ -83,6 +91,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editing = true
 			m.command = ""
 			m.message = ""
+		case "?":
+			m.showHelp = true
 		case "j", "down":
 			if m.selected+1 < len(m.tasks) {
 				m.selected++
@@ -133,6 +143,8 @@ func (m *tuiModel) submit() {
 		m.message = "input: " + err.Error()
 	} else if len(fields) == 0 {
 		m.message = ""
+	} else if fields[0] == "help" {
+		m.showHelp = true
 	} else if fields[0] != "run" {
 		m.message = "only run is available here; use pony --cli for other commands"
 	} else {
@@ -169,7 +181,11 @@ func (m *tuiModel) reload() {
 }
 
 func (m tuiModel) View() tea.View {
-	v := tea.NewView(renderTUI(m))
+	content := renderTUI(m)
+	if m.showHelp {
+		content = renderTUIHelp(m)
+	}
+	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
 }
