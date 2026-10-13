@@ -100,9 +100,11 @@ func TestTUIStartsInTerminal(t *testing.T) {
 
 func TestTUIRunCommand(t *testing.T) {
 	var got runOptions
+	var stopped task.TaskID
 	m := tuiModel{
 		list:    func() []task.Snapshot { return []task.Snapshot{{ID: got.id, State: task.StateRunning}} },
 		run:     func(opts runOptions) error { got = opts; return nil },
+		stop:    func(id task.TaskID) error { stopped = id; return nil },
 		command: "run --id demo --goal 'fix bug' --repo /tmp/repo --command sh --validate true",
 	}
 	m.submit()
@@ -111,8 +113,26 @@ func TestTUIRunCommand(t *testing.T) {
 	}
 	m.command = "stop demo"
 	m.submit()
-	if !strings.Contains(m.message, "only run") {
-		t.Fatalf("unsupported command message = %q", m.message)
+	if stopped != "demo" || m.message != "stop demo" {
+		t.Fatalf("stop command got id %q and message %q", stopped, m.message)
+	}
+}
+
+func TestUpdateAvailable(t *testing.T) {
+	cases := []struct {
+		current, latest string
+		want            bool
+	}{
+		{"v0.1.0", "v0.2.0", true},
+		{"v0.2.0", "v0.2.0", false},
+		{"v0.3.0", "v0.2.0", false},
+		{"v0.3.0-0.20261013.123456-abcdef123456", "v0.2.0", false},
+		{"dev", "v0.2.0", true},
+	}
+	for _, tc := range cases {
+		if got := updateAvailable(tc.current, tc.latest); got != tc.want {
+			t.Errorf("updateAvailable(%q, %q) = %t, want %t", tc.current, tc.latest, got, tc.want)
+		}
 	}
 }
 
