@@ -93,22 +93,24 @@ func renderTUIHelp(m tuiModel) string {
 	lines := []string{
 		"PONY HELP",
 		"",
-		"Start a coding task",
+		"Start a task",
 		"  Press : and enter a run command, for example:",
-		`  run --id demo --goal "Fix the bug" --repo /path/to/repo --command codex --validate "go test ./..."`,
-		"  Pony creates a Git worktree, starts the agent there, and checks it after a clean exit.",
+		`  run --id demo --goal "Plan a Go app" --command codex`,
+		"  Pony uses the current Git repository by default and creates a worktree.",
+		"  Add --repo PATH to choose another repo, or --validate COMMAND to run checks.",
 		"",
 		"Task list keys",
 		"  j / ↓       Select the next task",
 		"  k / ↑       Select the previous task",
 		"  s           Stop the selected task",
 		"  R           Restart it in its worktree",
-		"  c           Clean a stopped task's clean worktree",
-		"  v           Validate the selected stopped task",
+		"  c           Clean a stopped/completed task's clean worktree",
+		"  v           Validate a stopped task with configured checks",
 		"  p           View agent session process status",
 		"  r           Refresh the task list",
 		"  q           Quit Pony (running agents are stopped)",
 		"",
+		"Configured checks must pass for verified; without checks the task becomes completed.",
 		"The TUI can validate a stopped task (v) and show process status (p).",
 		"For session controls, use the CLI: pony --cli, then type help.",
 		"The CLI supports start, send, read, attach, resize, and detailed status.",
@@ -177,6 +179,8 @@ func styleStatus(line string, state task.State) string {
 	var color string
 	switch state {
 	case task.StateRunning, task.StateVerified:
+		color = "#62D6A7"
+	case task.StateCompleted:
 		color = "#62D6A7"
 	case task.StateValidating, task.StatePending:
 		color = "#E8BD62"

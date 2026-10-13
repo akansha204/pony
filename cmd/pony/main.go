@@ -298,15 +298,15 @@ func printCLIHelp() {
 	fmt.Println(`Pony CLI help
 
 Task commands:
-  run --id ID --goal TEXT --repo PATH --command CMD [--arg ARG] --validate COMMAND
-      Start a coding task in its own Git worktree. The goal is sent to the agent;
-      validation commands run after a clean exit. Repeat --validate to add checks.
+  run --id ID --goal TEXT --command CMD [--repo PATH] [--arg ARG] [--validate COMMAND]
+      Start a task in its own Git worktree. --repo defaults to the current Git repo.
+      Add --validate to run checks after a clean exit; without checks, task ends as completed.
   list                         List tasks and their states
   attach <id>                  Interact with a running task; Ctrl+\\ detaches
   stop <id>                    Stop a task without validating it
   restart <id>                 Restart a task in its existing worktree
-  validate <id>                Run the task's validation commands
-  clean <id>                   Release a stopped task's clean worktree
+  validate <id>                Run the task's configured validation commands
+  clean <id>                   Release a stopped/completed task's clean worktree
 
 Agent session commands:
   start <id> <cmd> [args...]   Start a named interactive program session

@@ -50,7 +50,7 @@ unreleased commit on `master`. To install a specific release, replace
 
 ## Development
 
-Requires Go 1.26+.
+Requires Go 1.26.4 or newer.
 
 ```sh
 make build      # compile to bin/pony
@@ -62,12 +62,12 @@ make check      # fmt + tidy + vet + test (mirrors CI)
 `make build` and `make run` include the current Git version in `pony --version`.
 For the release and version-tagging steps, see [docs/versioning.md](docs/versioning.md).
 
-## Run a coding task
+## Run a task
 
 Start Pony with `make run`. Press `:` and enter a command like:
 
 ```text
-run --id example --goal "Fix the failing test" --repo /path/to/repo --command codex --validate "go test ./..."
+run --id go-todo --goal "Build a simple in-memory todo backend in Go" --command codex
 ```
 
 The initial TUI shows task status and details. Use `j`/`k` or the arrow
@@ -76,20 +76,25 @@ actions are still in the CLI: start Pony with `pony --cli` (or
 `go run ./cmd/pony --cli`) to use commands such as:
 
 ```text
-pony> run --id example --goal "Fix the failing test" --repo /path/to/repo --command codex --validate "go test ./..."
+pony> run --id go-todo --goal "Build a simple in-memory todo backend in Go" --command codex
 pony> list
 pony> attach example
 ```
 
-Use `--arg VALUE` for each agent argument, `--base-ref REF` to choose a
-base commit (default `HEAD`), and repeat `--validate "COMMAND"` for
-additional checks. Each check has a five-minute timeout. The task's
-goal is sent to the agent on startup. A clean agent exit runs the checks
-in order; all must pass for the task to become `verified`.
+Run Pony from the Git repository you want to work on; Pony uses that current
+directory's repository by default. Add `--repo PATH` to choose a different
+repository. Use `--arg VALUE` for each agent argument,
+`--base-ref REF` to choose a base commit (default `HEAD`), and repeat
+`--validate "COMMAND"` when you want checks to run after the agent exits.
+Validation is optional; each check has a five-minute timeout. A task with
+checks becomes `verified` only when they all pass. Without checks, a clean
+agent exit marks the task `completed` without claiming it was verified.
+The working directory is still isolated in a new Git worktree based on the
+selected base ref; uncommitted changes in the original checkout are not copied.
 
 `attach` returns to Pony with Ctrl+\\. `stop ID` stops a task without
-validating it; `validate ID` runs its checks manually. `restart ID`
-reuses its worktree, and `clean ID` releases a stopped task's clean
+validating it; `validate ID` runs configured checks manually. `restart ID`
+reuses its worktree, and `clean ID` releases a stopped or completed task's clean
 worktree. Pony refuses to clean a worktree with uncommitted changes.
 `clean` leaves its Git branch intact, so use a new task ID for the next run.
 
