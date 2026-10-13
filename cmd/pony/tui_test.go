@@ -38,7 +38,7 @@ func TestTUIHelpKeyAndCommand(t *testing.T) {
 	m := tuiModel{}
 	next, _ := m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
 	m = next.(tuiModel)
-	if !m.showHelp || !strings.Contains(ansi.Strip(m.View().Content), "Start a coding task") {
+	if !m.showHelp || !strings.Contains(ansi.Strip(m.View().Content), "Start a task") {
 		t.Fatalf("help key did not show help: %+v", m)
 	}
 	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
