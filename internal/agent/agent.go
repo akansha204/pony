@@ -12,6 +12,18 @@ type SessionID string
 
 type RuntimeState string
 
+// AgentState is a best-effort description of what an agent appears to be doing.
+// It is independent from RuntimeState, which remains authoritative for process lifecycle.
+type AgentState string
+
+const (
+	AgentStateUnknown AgentState = "unknown"
+	AgentStateIdle    AgentState = "idle"
+	AgentStateWorking AgentState = "working"
+	AgentStateBlocked AgentState = "blocked"
+	AgentStateDone    AgentState = "done"
+)
+
 const (
 	StateIdle     RuntimeState = "idle"
 	StateStarting RuntimeState = "starting"
@@ -42,6 +54,7 @@ type session struct {
 	ID         SessionID
 	Generation uint64
 	State      RuntimeState
+	AgentState AgentState
 	StartedAt  time.Time
 	ExitedAt   time.Time
 
@@ -63,6 +76,7 @@ type SessionSnapshot struct {
 	SessionID  SessionID
 	Generation uint64
 	State      RuntimeState
+	AgentState AgentState
 	PID        int
 	StartedAt  time.Time
 	ExitedAt   time.Time

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 
+	"github.com/akansha204/pony/internal/agent"
 	"github.com/akansha204/pony/internal/task"
 	"github.com/akansha204/pony/internal/validation"
 )
@@ -268,5 +269,13 @@ func TestTUIReadReportsDroppedOutput(t *testing.T) {
 	m = next.(tuiModel)
 	if !strings.Contains(m.message, "4096 earlier output bytes were dropped") || m.agentOutput != "recent" {
 		t.Fatalf("read status=%q output=%q", m.message, m.agentOutput)
+	}
+}
+
+func TestTUISessionStatusShowsAgentState(t *testing.T) {
+	m := tuiModel{showSessions: true, width: 100, agents: []agent.SessionSnapshot{{AgentID: "demo", PID: 42, State: agent.StateRunning, AgentState: agent.AgentStateUnknown}}}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "runtime=running agent=unknown") {
+		t.Fatalf("session status view = %q", view)
 	}
 }

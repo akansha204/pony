@@ -82,6 +82,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 		ID:         sessionID,
 		Generation: gen + 1,
 		State:      StateStarting,
+		AgentState: AgentStateUnknown,
 	}
 
 	h, err := m.driver.Start(context.Background(), driver.Spec{
@@ -308,9 +309,10 @@ func snapshotOf(a *agent) SessionSnapshot {
 	s := a.session
 	if s == nil {
 		return SessionSnapshot{
-			AgentID:   a.spec.ID,
-			SessionID: a.sessionID,
-			State:     StateIdle,
+			AgentID:    a.spec.ID,
+			SessionID:  a.sessionID,
+			State:      StateIdle,
+			AgentState: AgentStateUnknown,
 		}
 	}
 
@@ -319,6 +321,7 @@ func snapshotOf(a *agent) SessionSnapshot {
 		SessionID:  s.ID,
 		Generation: s.Generation,
 		State:      s.State,
+		AgentState: s.AgentState,
 		PID:        s.PID,
 		StartedAt:  s.StartedAt,
 		ExitedAt:   s.ExitedAt,

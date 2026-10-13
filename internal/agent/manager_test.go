@@ -66,6 +66,9 @@ func TestStartSpawnsRealProcess(t *testing.T) {
 	if snap.State != StateRunning {
 		t.Fatalf("state = %s, want %s", snap.State, StateRunning)
 	}
+	if snap.AgentState != AgentStateUnknown {
+		t.Fatalf("agent state = %s, want %s", snap.AgentState, AgentStateUnknown)
+	}
 	if !processAlive(snap.PID) {
 		t.Fatalf("process %d is not alive", snap.PID)
 	}

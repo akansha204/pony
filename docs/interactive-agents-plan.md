@@ -1,6 +1,6 @@
 # Pony — Interactive Agents + State From Output (Plan)
 
-> **Status:** Phase 1 planned; later phases not implemented.
+> **Status:** Phase 1 implemented; later phases planned.
 > This is a follow-on plan, not part of [v1-plan.md](./v1-plan.md).
 
 > Build Pony one systems problem at a time.
