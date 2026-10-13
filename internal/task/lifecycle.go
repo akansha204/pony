@@ -18,6 +18,9 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	if task.SessionID == "" {
 		return Snapshot{}, fmt.Errorf("task %q has not been started", id)
 	}
+	if task.State == StateStopped {
+		return task, nil
+	}
 	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed || task.State == StateCompleted {
 		return Snapshot{}, fmt.Errorf("task %q is %s", id, task.State)
 	}
@@ -29,7 +32,19 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("stop task %q: agent session is missing", id)
 	}
 
-	task.State = StateStopped
+	switch session.State {
+	case agent.StateCrashed:
+		task.State = StateFailed
+		m.tasks[id] = task
+		m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed")
+		m.record(task, event.TaskFailed, session.Generation, "task failed")
+		return task, fmt.Errorf("stop task %q: agent had already crashed", id)
+	case agent.StateStopped:
+		task.State = StateStopped
+	default:
+		return Snapshot{}, fmt.Errorf("stop task %q: agent ended in unexpected state %q", id, session.State)
+	}
+
 	m.tasks[id] = task
 	m.record(task, event.RuntimeExited, session.Generation, "runtime stopped")
 	return task, nil

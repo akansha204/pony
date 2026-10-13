@@ -121,6 +121,75 @@ func TestRefreshRecordsCrashAndTaskFailure(t *testing.T) {
 	}
 }
 
+func TestStopAfterCrashRecordsCrash(t *testing.T) {
+	tasks, store, workspaces, agents, repo := eventManager(t)
+	t.Cleanup(func() {
+		_ = agents.Stop("task")
+		_ = workspaces.Release(repo, "ws-task")
+	})
+	if _, err := tasks.Create(Spec{ID: "task", Goal: "goal", Repository: repo, BaseRef: "main"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := tasks.Start("task", LaunchSpec{Command: "sh", Args: []string{"-c", "exit 7"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		session, ok := agents.Get("task")
+		if ok && session.State == agent.StateCrashed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent state = %+v, want crashed", session)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got, err := tasks.Stop("task")
+	if err == nil {
+		t.Fatal("Stop reported success after the agent had crashed")
+	}
+	if got.State != StateFailed {
+		t.Fatalf("task state = %s, want failed", got.State)
+	}
+	events := store.ListTask("task")
+	last := events[len(events)-2:]
+	if last[0].Type != event.RuntimeCrashed || last[1].Type != event.TaskFailed {
+		t.Fatalf("final events = %+v, want crash and task failure", last)
+	}
+}
+
+func TestStoppingTaskTwiceRecordsOneRuntimeExit(t *testing.T) {
+	tasks, store, workspaces, agents, repo := eventManager(t)
+	t.Cleanup(func() {
+		_ = agents.Stop("task")
+		_ = workspaces.Release(repo, "ws-task")
+	})
+	if _, err := tasks.Create(Spec{ID: "task", Goal: "goal", Repository: repo, BaseRef: "main"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := tasks.Start("task", LaunchSpec{Command: "sleep", Args: []string{"1000"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := tasks.Stop("task"); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+	if _, err := tasks.Stop("task"); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+
+	exits := 0
+	for _, recorded := range store.ListTask("task") {
+		if recorded.Type == event.RuntimeExited || recorded.Type == event.RuntimeCrashed {
+			exits++
+		}
+	}
+	if exits != 1 {
+		t.Fatalf("runtime final events = %d, want 1: %+v", exits, store.ListTask("task"))
+	}
+}
+
 func TestFailedStartDoesNotRecordCreatedResources(t *testing.T) {
 	tasks, store, _, _, repo := eventManager(t)
 	if _, err := tasks.Create(Spec{ID: "task", Goal: "goal", Repository: repo, BaseRef: "main"}); err != nil {
