@@ -5,6 +5,8 @@ package driver
 import (
 	"context"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -101,5 +103,76 @@ func TestProcessDriverStopWaitsForRemainingGroupMembers(t *testing.T) {
 	case <-waitDone:
 	case <-time.After(time.Second):
 		t.Fatal("leader wait did not complete")
+	}
+}
+
+func TestBlockingReadDoesNotPreventProcessWait(t *testing.T) {
+	d := NewProcessDriver()
+	pidFile := t.TempDir() + "/child.pid"
+	h, err := d.Start(context.Background(), Spec{
+		Path: "sh",
+		Args: []string{"-c", `setsid sh -c 'echo $$ > "$PONY_CHILD_PID"; exec sleep 30' & exit`},
+		Env:  []string{"PONY_CHILD_PID=" + pidFile},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.ReadFile(pidFile); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.ReadFile(pidFile); err != nil {
+		t.Fatalf("child did not publish its PID: %v", err)
+	}
+
+	// Drain the shell's output so the next read blocks on the silent child,
+	// which inherited the pipe's write end.
+	buf := make([]byte, 256)
+	for time.Now().Before(deadline) {
+		n, err := d.ReadTimeout(h, buf, 50*time.Millisecond)
+		if err != nil {
+			t.Fatalf("ReadTimeout while draining: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := d.Read(h, make([]byte, 1))
+		readDone <- err
+	}()
+	for time.Now().Before(deadline) {
+		if h.readMu.TryLock() {
+			h.readMu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	waitDone := make(chan ExitResult, 1)
+	go func() { waitDone <- d.Wait(h) }()
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatalf("Wait deadlocked behind a blocking pipe read (PID %d)", h.PID)
+	}
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("closing stdout did not unblock Read")
 	}
 }

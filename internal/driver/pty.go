@@ -62,11 +62,12 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 	}
 
 	return &Handle{
-		PID:    cmd.Process.Pid,
-		done:   make(chan struct{}),
-		proc:   cmd.Process,
-		cmd:    cmd,
-		master: master,
+		PID:     cmd.Process.Pid,
+		done:    make(chan struct{}),
+		closing: make(chan struct{}),
+		proc:    cmd.Process,
+		cmd:     cmd,
+		master:  master,
 	}, nil
 }
 
@@ -90,12 +91,12 @@ func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
 
 	// readMu is separate from writeMu, so a read and a write stay full-duplex.
 	h.stateMu.RLock()
-	defer h.stateMu.RUnlock()
-
-	if h.master == nil {
+	f := h.master
+	h.stateMu.RUnlock()
+	if f == nil {
 		return 0, fmt.Errorf("%w: process %d is not on a terminal", ErrClosed, h.PID)
 	}
-	return h.master.Read(p)
+	return readUntilDone(h, f, p)
 }
 
 // Resize publishes a new window size to the process (SIGWINCH). Held under

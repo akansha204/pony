@@ -62,12 +62,13 @@ type Handle struct {
 	readMu  sync.Mutex
 	writeMu sync.Mutex
 
-	done   chan struct{} //closed by Wait when the process dies
-	proc   *os.Process
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser // optional; Write feeds the process here
-	stdout io.ReadCloser  // optional; Read drains the process here
-	master *os.File       // optional; the PTY master when on a terminal
+	done    chan struct{} //closed by Wait when the process dies
+	closing chan struct{} // closed by Wait before it tears down output
+	proc    *os.Process
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser // optional; Write feeds the process here
+	stdout  io.ReadCloser  // optional; Read drains the process here
+	master  *os.File       // optional; the PTY master when on a terminal
 }
 
 type Driver interface {
@@ -105,24 +106,28 @@ func (d *ProcessDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		stdin.Close()
 		return nil, err
 	}
+	cmd.Stdout = stdoutWriter
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, err
 	}
+	_ = stdoutWriter.Close()
 
 	return &Handle{
-		PID:    cmd.Process.Pid,
-		done:   make(chan struct{}),
-		proc:   cmd.Process,
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
+		PID:     cmd.Process.Pid,
+		done:    make(chan struct{}),
+		closing: make(chan struct{}),
+		proc:    cmd.Process,
+		cmd:     cmd,
+		stdin:   stdin,
+		stdout:  stdout,
 	}, nil
 }
 
@@ -145,12 +150,53 @@ func (d *ProcessDriver) Read(h *Handle, p []byte) (int, error) {
 	defer h.readMu.Unlock()
 
 	h.stateMu.RLock()
-	defer h.stateMu.RUnlock()
-
-	if h.stdout == nil {
+	f := h.stdout
+	h.stateMu.RUnlock()
+	if f == nil {
 		return 0, fmt.Errorf("%w: process %d has no stdout", ErrClosed, h.PID)
 	}
-	return h.stdout.Read(p)
+	file, ok := f.(*os.File)
+	if !ok {
+		return 0, fmt.Errorf("%w: process %d stdout is not pollable", ErrUnsupported, h.PID)
+	}
+	select {
+	case <-h.closing:
+		return 0, fmt.Errorf("%w: process %d output closed", ErrClosed, h.PID)
+	default:
+	}
+
+	// Closing an fd from another goroutine does not reliably interrupt a
+	// blocking read on Linux. Poll briefly so Wait can signal teardown through
+	// done, even when a descendant still holds the pipe's write end open.
+	return readUntilDone(h, file, p)
+}
+
+func readUntilDone(h *Handle, f *os.File, p []byte) (int, error) {
+	for {
+		select {
+		case <-h.closing:
+			return 0, fmt.Errorf("%w: process %d output closed", ErrClosed, h.PID)
+		default:
+		}
+
+		fds := []unix.PollFd{{Fd: int32(f.Fd()), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
+		n, err := unix.Poll(fds, 50)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			continue
+		}
+		if fds[0].Revents&unix.POLLNVAL != 0 {
+			return 0, fmt.Errorf("%w: process %d output fd is invalid", ErrClosed, h.PID)
+		}
+		if fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+			return f.Read(p)
+		}
+	}
 }
 
 func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) (int, error) {
@@ -161,14 +207,12 @@ func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) 
 	h.readMu.Lock()
 	defer h.readMu.Unlock()
 
-	// Held across the poll so Wait cannot close the fd mid-read.
 	h.stateMu.RLock()
-	defer h.stateMu.RUnlock()
-
 	f := h.master
 	if f == nil {
 		f, _ = h.stdout.(*os.File)
 	}
+	h.stateMu.RUnlock()
 	if f == nil {
 		return 0, fmt.Errorf("%w: process %d has no pollable output", ErrClosed, h.PID)
 	}
@@ -178,6 +222,12 @@ func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) 
 	// process ends the wait and the read returns its final EOF/EIO.
 	deadline := time.Now().Add(timeout)
 	for {
+		select {
+		case <-h.closing:
+			return 0, fmt.Errorf("%w: process %d output closed", ErrClosed, h.PID)
+		default:
+		}
+
 		remaining := time.Until(deadline)
 		if timeout == 0 {
 			remaining = 0
@@ -274,6 +324,12 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 
 	err := cmd.Wait()
 	res := classifyExit(err)
+	close(h.closing)
+
+	// A blocking read polls h.closing and exits promptly. Wait for it before
+	// closing the descriptor so the fd cannot be reused under an active poll.
+	h.readMu.Lock()
+	defer h.readMu.Unlock()
 
 	h.stateMu.Lock()
 	stdin := h.stdin

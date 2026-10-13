@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -528,6 +529,96 @@ func testProcessAlive(pid int) bool {
 	}
 
 	return fields[0] != "Z"
+}
+
+// A child that inherited the PTY slave can keep a blocking read open after
+// the command leader exits. Wait must still close the master and finish.
+func TestBlockingReadDoesNotPreventPTYWait(t *testing.T) {
+	d := NewPTYDriver()
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	h, err := d.Start(context.Background(), Spec{
+		Path: "sh",
+		Args: []string{"-c", `sleep 30 & echo $! > "$PONY_CHILD_PID"; exit`},
+		Env:  []string{"PONY_CHILD_PID=" + pidFile},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(pidFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("PTY child did not publish its PID")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Drain the shell's startup/exit bytes so the next read blocks on the
+	// descendant, which still has the slave open but produces no output.
+	buf := make([]byte, 256)
+	for time.Now().Before(deadline) {
+		n, err := d.ReadTimeout(h, buf, 50*time.Millisecond)
+		if err != nil {
+			// Linux PTY masters may report EIO once the session leader exits
+			// even while a background job is being torn down.
+			if errors.Is(err, syscall.EIO) {
+				break
+			}
+			t.Fatalf("ReadTimeout while draining: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := d.Read(h, make([]byte, 1))
+		readDone <- err
+	}()
+	// Wait until Read owns readMu, proving it reached the blocking read.
+	readFinished := false
+	for time.Now().Before(deadline) {
+		select {
+		case <-readDone:
+			readFinished = true
+		default:
+		}
+		if readFinished {
+			break
+		}
+		if h.readMu.TryLock() {
+			h.readMu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	waitDone := make(chan ExitResult, 1)
+	go func() { waitDone <- d.Wait(h) }()
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("Wait deadlocked behind a blocking PTY read")
+	}
+	if !readFinished {
+		select {
+		case <-readDone:
+		case <-time.After(time.Second):
+			t.Fatal("closing the PTY did not unblock Read")
+		}
+	}
 }
 
 func TestPTYStopKillsJobControlChild(t *testing.T) {
