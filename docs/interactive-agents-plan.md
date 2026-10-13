@@ -1,6 +1,6 @@
 # Pony — Interactive Agents + State From Output (Plan)
 
-> **Status:** Phase 1 implemented; later phases planned.
+> **Status:** Phases 1–2 implemented; later phases planned.
 > This is a follow-on plan, not part of [v1-plan.md](./v1-plan.md).
 
 > Build Pony one systems problem at a time.
@@ -147,6 +147,13 @@ detector can look at what a human would look at.
 -   Feed it from the reader (on the reader's goroutine or a copy handed
     off cheaply).
 -   Expose a read-only "snapshot" of the visible tail.
+-   `screen <id>` prints the latest snapshot on demand. If the bounded
+    observer queue drops bytes, report that the snapshot may be incomplete.
+
+The first implementation models common text, cursor, erase, scroll,
+OSC, and alternate-screen controls. It is a small text screen model,
+not a complete xterm emulator; color and advanced terminal modes are
+not rendered.
 
 ### Invariants
 
@@ -156,10 +163,11 @@ detector can look at what a human would look at.
 
 ### Tests
 
--   [ ] Given a scripted sequence, the visible tail matches expectation.
--   [ ] Alternate-screen enter/leave is handled.
--   [ ] Long scrollback stays bounded.
--   [ ] Reader throughput is unchanged within a tolerance.
+-   [x] Given a scripted sequence, the visible tail matches expectation.
+-   [x] Alternate-screen enter/leave is handled.
+-   [x] Long scrollback stays bounded.
+-   [x] A 2 MiB scripted PTY burst drains within 3 seconds with screen
+    observation enabled.
 
 ### Done when
 

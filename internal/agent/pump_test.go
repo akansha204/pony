@@ -6,6 +6,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,35 @@ type delayedFinalReadDriver struct {
 	readStarted chan struct{}
 	releaseRead chan struct{}
 	waitStarted chan struct{}
+}
+
+type burstScreenDriver struct {
+	driver.Driver
+	remaining int
+	done      chan struct{}
+	once      sync.Once
+}
+
+func (d *burstScreenDriver) Start(context.Context, driver.Spec) (*driver.Handle, error) {
+	return &driver.Handle{PID: 1}, nil
+}
+
+func (d *burstScreenDriver) Read(_ *driver.Handle, p []byte) (int, error) {
+	if d.remaining == 0 {
+		d.once.Do(func() { close(d.done) })
+		return 0, io.EOF
+	}
+	n := min(len(p), d.remaining)
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	d.remaining -= n
+	return n, nil
+}
+
+func (d *burstScreenDriver) Wait(*driver.Handle) driver.ExitResult {
+	<-d.done
+	return driver.ExitResult{}
 }
 
 func (d *delayedFinalReadDriver) Start(_ context.Context, _ driver.Spec) (*driver.Handle, error) {
@@ -86,6 +116,57 @@ func TestOutputSurvivesUntilAnAgentIsRead(t *testing.T) {
 	got := readAll(t, m, spec.ID, 2*time.Second)
 	if !strings.Contains(got, "ready") {
 		t.Errorf("output %q does not contain the line the agent printed before anyone read", got)
+	}
+}
+
+func TestScreenSnapshotObservesPTYWithoutReadingItAgain(t *testing.T) {
+	m := pumpPTY(t)
+	spec := AgentSpec{ID: "screen", Command: "sh"}
+	t.Cleanup(func() { _ = m.Stop(spec.ID) })
+	if _, err := m.Start(spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := m.Write(spec.ID, []byte("printf 'SCREEN_TOKEN\\n'\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap, err := m.ScreenSnapshot(spec.ID)
+		if err != nil {
+			t.Fatalf("ScreenSnapshot: %v", err)
+		}
+		if strings.Contains(snap.Text, "SCREEN_TOKEN") {
+			if !snap.Reliable {
+				t.Fatal("screen observer unexpectedly lost bytes")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	snap, _ := m.ScreenSnapshot(spec.ID)
+	t.Fatalf("screen did not observe PTY output: %q", snap.Text)
+}
+
+func TestScreenObserverDoesNotBlockPTYPump(t *testing.T) {
+	const burstBytes = 2 << 20
+	d := &burstScreenDriver{remaining: burstBytes, done: make(chan struct{})}
+	m := NewManager(d)
+	if _, err := m.Start(AgentSpec{ID: "burst", Command: "scripted"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	started := time.Now()
+	buf := make([]byte, 4096)
+	for {
+		_, err := m.ReadTimeout("burst", buf, time.Second)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadTimeout: %v", err)
+		}
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("PTY pump took %s to drain %d bytes with screen observation enabled", elapsed, burstBytes)
 	}
 }
 

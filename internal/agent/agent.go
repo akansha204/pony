@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/akansha204/pony/internal/driver"
+	"github.com/akansha204/pony/internal/screen"
 )
 
 type AgentID string
@@ -58,11 +59,13 @@ type session struct {
 	StartedAt  time.Time
 	ExitedAt   time.Time
 
-	PID     int
-	h       *driver.Handle
-	done    chan struct{}
-	stopReq bool
-	out     *outputBuffer
+	PID        int
+	h          *driver.Handle
+	done       chan struct{}
+	stopReq    bool
+	out        *outputBuffer
+	screen     *screen.Model
+	screenFeed chan []byte
 }
 
 type agent struct {

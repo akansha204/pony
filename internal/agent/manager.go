@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akansha204/pony/internal/driver"
+	"github.com/akansha204/pony/internal/screen"
 )
 
 type Manager struct {
@@ -83,6 +84,8 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 		Generation: gen + 1,
 		State:      StateStarting,
 		AgentState: AgentStateUnknown,
+		screen:     screen.New(24, 80, 256),
+		screenFeed: make(chan []byte, 64),
 	}
 
 	h, err := m.driver.Start(context.Background(), driver.Spec{
@@ -111,6 +114,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	a.session = s
 
 	go m.pump(a, s, h)
+	go observeScreen(s)
 	go m.monitor(a, s)
 
 	return snapshotOf(a), nil
@@ -281,6 +285,10 @@ func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
 
 	m.mu.Lock()
 	h := m.runningHandle(id)
+	var model *screen.Model
+	if a := m.agents[id]; a != nil && a.session != nil {
+		model = a.session.screen
+	}
 	m.mu.Unlock()
 
 	if h == nil {
@@ -290,8 +298,25 @@ func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
 	if err := m.driver.Resize(h, rows, cols); err != nil {
 		return fmt.Errorf("resize agent %q: %w", id, err)
 	}
+	if model != nil {
+		model.Resize(int(rows), int(cols))
+	}
 
 	return nil
+}
+
+// ScreenSnapshot returns the latest asynchronously updated terminal screen.
+// The PTY remains consumed only by the session pump; this is a passive copy.
+func (m *Manager) ScreenSnapshot(id AgentID) (screen.Snapshot, error) {
+	m.mu.Lock()
+	a := m.agents[id]
+	if a == nil || a.session == nil || a.session.screen == nil {
+		m.mu.Unlock()
+		return screen.Snapshot{}, fmt.Errorf("agent %q has no screen snapshot", id)
+	}
+	model := a.session.screen
+	m.mu.Unlock()
+	return model.Snapshot(), nil
 }
 
 func (m *Manager) Snapshots() []SessionSnapshot {
@@ -330,16 +355,29 @@ func snapshotOf(a *agent) SessionSnapshot {
 
 func (m *Manager) pump(a *agent, s *session, h *driver.Handle) {
 	defer s.out.close()
+	defer close(s.screenFeed)
 
 	buf := make([]byte, 4096)
 	for {
 		n, err := m.driver.Read(h, buf)
 		if n > 0 {
 			s.out.write(buf[:n])
+			chunk := append([]byte(nil), buf[:n]...)
+			select {
+			case s.screenFeed <- chunk:
+			default:
+				s.screen.MarkDropped(uint64(len(chunk)))
+			}
 		}
 		if err != nil {
 			return
 		}
+	}
+}
+
+func observeScreen(s *session) {
+	for chunk := range s.screenFeed {
+		s.screen.Feed(chunk)
 	}
 }
 

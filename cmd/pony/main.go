@@ -262,6 +262,24 @@ func main() {
 			}
 			readAgent(mgr, agent.AgentID(fields[1]))
 
+		case "screen":
+			if len(fields) != 2 {
+				fmt.Println("usage: screen <id>")
+				continue
+			}
+			snap, err := mgr.ScreenSnapshot(agent.AgentID(fields[1]))
+			if err != nil {
+				fmt.Println("screen:", err)
+				continue
+			}
+			fmt.Printf("screen %s (%dx%d)\n", fields[1], snap.Rows, snap.Columns)
+			if !snap.Reliable {
+				fmt.Printf("[screen may be incomplete: %d observer bytes were dropped]\n", snap.DroppedBytes)
+			}
+			for _, line := range snap.Visible {
+				fmt.Println(line)
+			}
+
 		case "resize":
 			if len(fields) != 4 {
 				fmt.Println("usage: resize <id> <rows> <cols>")
@@ -340,6 +358,7 @@ Agent session commands:
   start <id> <cmd> [args...]   Start a named interactive program session
   send <id> <text>             Send text followed by Enter
   read <id>                    Show buffered terminal output
+  screen <id>                  Show the latest modeled terminal screen
   attach <id>                  Type directly into a running session; Ctrl+\\ detaches
   resize <id> <rows> <cols>    Set a session's terminal size
   status                       Show agent process IDs and runtime states

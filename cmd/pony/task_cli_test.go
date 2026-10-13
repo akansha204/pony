@@ -412,6 +412,36 @@ func TestCLICommandRunsTaskToVerification(t *testing.T) {
 	}
 }
 
+func TestCLIScreenCommandPrintsModeledPTYScreen(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$")
+	cmd.Env = append(os.Environ(), "PONY_CLI_TEST_HELPER=1", "XDG_DATA_HOME="+t.TempDir())
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output, errorsOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &errorsOut
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Write([]byte("start screen sh\nsend screen \"printf 'SCREEN_TOKEN\\n'\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := stdin.Write([]byte("screen screen\nquit\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Pony: %v\nstdout: %s\nstderr: %s", err, output.String(), errorsOut.String())
+	}
+	if !strings.Contains(output.String(), "screen screen (24x80)") || !strings.Contains(output.String(), "SCREEN_TOKEN") {
+		t.Fatalf("screen command did not print the visible PTY content:\n%s\nstderr: %s", output.String(), errorsOut.String())
+	}
+}
+
 func TestCLIHandlesCRLFTerminatedQuit(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$")
 	cmd.Env = append(os.Environ(), "PONY_CLI_TEST_HELPER=1", "XDG_DATA_HOME="+t.TempDir())
