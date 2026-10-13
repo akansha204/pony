@@ -47,8 +47,22 @@ func main() {
 		return
 	}
 	if len(os.Args) == 1 && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-		if err := runTUI(a); err != nil {
-			fmt.Fprintln(os.Stderr, "tui:", err)
+		for {
+			id, err := runTUI(a)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "tui:", err)
+				break
+			}
+			if id == "" {
+				break
+			}
+			if err := attach(mgr, id); err != nil {
+				var signalErr *attachSignalError
+				if errors.As(err, &signalErr) {
+					break
+				}
+				fmt.Fprintln(os.Stderr, "attach:", err)
+			}
 		}
 		return
 	}

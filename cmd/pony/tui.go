@@ -1,7 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -21,6 +25,12 @@ type validationMsg struct {
 	err      error
 }
 
+type agentReadMsg struct {
+	id  agent.AgentID
+	out string
+	err error
+}
+
 type tuiModel struct {
 	list         func() []task.Snapshot
 	run          func(runOptions) error
@@ -29,6 +39,7 @@ type tuiModel struct {
 	clean        func(task.TaskID) error
 	validate     func(task.TaskID) (task.Snapshot, []validation.Result, error)
 	sessions     func() []agent.SessionSnapshot
+	agentsAPI    *agent.Manager
 	tasks        []task.Snapshot
 	agents       []agent.SessionSnapshot
 	selected     int
@@ -39,6 +50,8 @@ type tuiModel struct {
 	message      string
 	showHelp     bool
 	showSessions bool
+	attachID     agent.AgentID
+	agentOutput  string
 }
 
 func newTUIModel(a *app) tuiModel {
@@ -56,11 +69,12 @@ func newTUIModel(a *app) tuiModel {
 			_, err := a.restart(id)
 			return err
 		},
-		clean:    a.clean,
-		validate: a.validate,
-		sessions: a.agents.Snapshots,
-		tasks:    a.tasks.List(),
-		agents:   a.agents.Snapshots(),
+		clean:     a.clean,
+		validate:  a.validate,
+		sessions:  a.agents.Snapshots,
+		agentsAPI: a.agents,
+		tasks:     a.tasks.List(),
+		agents:    a.agents.Snapshots(),
 	}
 }
 
@@ -93,7 +107,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter":
 				m.editing = false
-				m.submit()
+				return m, m.submit()
 			case "esc":
 				m.editing = false
 				m.command = ""
@@ -131,6 +145,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			m.reload()
+			m.message = "refreshed"
 		case "s":
 			m.applySelected("stop", m.stop)
 		case "R":
@@ -160,6 +175,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.message += " timed out"
 				}
 			}
+		}
+	case agentReadMsg:
+		if msg.err != nil {
+			m.message = "read " + string(msg.id) + ": " + msg.err.Error()
+			m.agentOutput = ""
+		} else if msg.out == "" {
+			m.message = "no output available for " + string(msg.id)
+			m.agentOutput = ""
+		} else {
+			m.message = "read " + string(msg.id)
+			m.agentOutput = msg.out
 		}
 	}
 	return m, nil
@@ -201,30 +227,211 @@ func (m *tuiModel) applySelected(action string, fn func(task.TaskID) error) {
 	m.reload()
 }
 
-func (m *tuiModel) submit() {
+func (m *tuiModel) submit() tea.Cmd {
 	fields, err := shell_lexer.Fields(m.command)
+	var cmd tea.Cmd
 	if err != nil {
 		m.message = "input: " + err.Error()
 	} else if len(fields) == 0 {
 		m.message = ""
-	} else if fields[0] == "help" {
-		m.showHelp = true
-	} else if fields[0] != "run" {
-		m.message = "only run is available here; use pony --cli for other commands"
 	} else {
-		var opts runOptions
-		opts, err = parseRun(fields[1:])
-		if err == nil {
-			err = m.run(opts)
-		}
-		if err != nil {
-			m.message = "run: " + err.Error()
-		} else {
-			m.message = "started " + string(opts.id)
+		switch fields[0] {
+		case "help":
+			m.showHelp = true
+		case "run":
+			var opts runOptions
+			opts, err = parseRun(fields[1:])
+			if err == nil {
+				err = m.run(opts)
+			}
+			if err != nil {
+				m.message = "run: " + err.Error()
+			} else {
+				m.message = "started " + string(opts.id)
+				m.reload()
+			}
+		case "start":
+			if len(fields) < 3 {
+				m.message = "usage: start <id> <command> [args...]"
+			} else if _, exists := m.taskByID(task.TaskID(fields[1])); exists {
+				m.message = "start: " + fields[1] + " is a task ID; use restart " + fields[1]
+			} else if m.agentsAPI == nil {
+				m.message = "start: not available"
+			} else {
+				var snap agent.SessionSnapshot
+				snap, err = m.agentsAPI.Start(agent.AgentSpec{ID: agent.AgentID(fields[1]), Command: fields[2], Args: fields[3:]})
+				if err != nil {
+					m.message = "start: " + err.Error()
+				} else {
+					m.message = fmt.Sprintf("started %s pid=%d state=%s", snap.AgentID, snap.PID, snap.State)
+					m.refreshAgents()
+				}
+			}
+		case "send":
+			if len(fields) < 3 {
+				m.message = "usage: send <id> <text>"
+			} else if m.agentsAPI == nil {
+				m.message = "send: not available"
+			} else {
+				text := strings.Join(fields[2:], " ")
+				_, err = m.agentsAPI.Write(agent.AgentID(fields[1]), []byte(text+"\n"))
+				if err != nil {
+					m.message = "send: " + err.Error()
+				} else {
+					m.message = "sent " + fields[1] + ": " + text
+				}
+			}
+		case "read":
+			if len(fields) != 2 {
+				m.message = "usage: read <id>"
+			} else if m.agentsAPI == nil {
+				m.message = "read: not available"
+			} else {
+				m.message = "reading " + fields[1] + "..."
+				mgr, id := m.agentsAPI, agent.AgentID(fields[1])
+				cmd = func() tea.Msg {
+					out, err := readAgentOutput(mgr, id)
+					return agentReadMsg{id: id, out: out, err: err}
+				}
+			}
+		case "attach":
+			if len(fields) != 2 {
+				m.message = "usage: attach <id>"
+			} else {
+				m.attachID = agent.AgentID(fields[1])
+				return tea.Quit
+			}
+		case "resize":
+			if len(fields) != 4 {
+				m.message = "usage: resize <id> <rows> <cols>"
+				break
+			}
+			rows, rowErr := strconv.Atoi(fields[2])
+			cols, colErr := strconv.Atoi(fields[3])
+			if rowErr != nil || colErr != nil || rows < 1 || rows > 65535 || cols < 1 || cols > 65535 {
+				m.message = "resize: rows and cols must be numbers in the range 1..65535"
+			} else if m.agentsAPI == nil {
+				m.message = "resize: not available"
+			} else if err = m.agentsAPI.Resize(agent.AgentID(fields[1]), uint16(rows), uint16(cols)); err != nil {
+				m.message = "resize: " + err.Error()
+			} else {
+				m.message = fmt.Sprintf("resized %s to %dx%d", fields[1], rows, cols)
+			}
+		case "status":
+			m.showSessions = true
+			m.refreshAgents()
+		case "clean":
+			if len(fields) != 2 {
+				m.message = "usage: clean <task-id>"
+			} else if m.clean == nil {
+				m.message = "clean: not available"
+			} else if err = m.clean(task.TaskID(fields[1])); err != nil {
+				m.message = "clean: " + err.Error()
+			} else {
+				m.message = "clean " + fields[1]
+				m.reload()
+			}
+		case "validate":
+			if len(fields) != 2 {
+				m.message = "usage: validate <task-id>"
+			} else if m.validate == nil {
+				m.message = "validate: not available"
+			} else {
+				id := task.TaskID(fields[1])
+				m.message = "validating " + string(id) + "..."
+				validate := m.validate
+				cmd = func() tea.Msg {
+					snapshot, results, err := validate(id)
+					return validationMsg{snapshot: snapshot, results: results, err: err}
+				}
+			}
+		case "list":
 			m.reload()
+			m.message = fmt.Sprintf("%d task(s)", len(m.tasks))
+		case "stop", "restart":
+			if len(fields) != 2 {
+				m.message = "usage: " + fields[0] + " <id>"
+				break
+			}
+			id := fields[1]
+			if _, ok := m.taskByID(task.TaskID(id)); ok {
+				fn := m.stop
+				if fields[0] == "restart" {
+					fn = m.restart
+				}
+				if fn == nil {
+					m.message = fields[0] + ": not available"
+				} else if err = fn(task.TaskID(id)); err != nil {
+					m.message = fields[0] + ": " + err.Error()
+				} else {
+					m.message = fields[0] + " " + id
+					m.reload()
+				}
+			} else if m.agentsAPI == nil {
+				m.message = fields[0] + ": not available"
+			} else if fields[0] == "stop" {
+				err = m.agentsAPI.Stop(agent.AgentID(id))
+				if err == nil {
+					m.message = "stopped " + id
+					m.refreshAgents()
+				} else {
+					m.message = "stop: " + err.Error()
+				}
+			} else {
+				err = m.agentsAPI.Restart(agent.AgentID(id))
+				if err == nil {
+					m.message = "restarted " + id
+					m.refreshAgents()
+				} else {
+					m.message = "restart: " + err.Error()
+				}
+			}
+		case "quit", "exit":
+			return tea.Quit
+		default:
+			m.message = "unknown command; type help for usage"
 		}
 	}
 	m.command = ""
+	return cmd
+}
+
+func (m *tuiModel) refreshAgents() {
+	if m.sessions != nil {
+		m.agents = m.sessions()
+	}
+}
+
+func readAgentOutput(mgr *agent.Manager, id agent.AgentID) (string, error) {
+	const chunkWait = 200 * time.Millisecond
+	buf := make([]byte, 4096)
+	var out strings.Builder
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := mgr.ReadTimeout(id, buf, chunkWait)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return out.String(), nil
+			}
+			return out.String(), err
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return out.String(), nil
+}
+
+func (m tuiModel) taskByID(id task.TaskID) (task.Snapshot, bool) {
+	for _, snapshot := range m.tasks {
+		if snapshot.ID == id {
+			return snapshot, true
+		}
+	}
+	return task.Snapshot{}, false
 }
 
 func (m *tuiModel) reload() {
@@ -256,7 +463,13 @@ func (m tuiModel) View() tea.View {
 	return v
 }
 
-func runTUI(a *app) error {
-	_, err := tea.NewProgram(newTUIModel(a)).Run()
-	return err
+func runTUI(a *app) (agent.AgentID, error) {
+	finalModel, err := tea.NewProgram(newTUIModel(a)).Run()
+	if err != nil {
+		return "", err
+	}
+	if model, ok := finalModel.(tuiModel); ok {
+		return model.attachID, nil
+	}
+	return "", nil
 }

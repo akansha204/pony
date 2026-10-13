@@ -41,7 +41,7 @@ func renderTUI(m tuiModel) string {
 	}
 	fmt.Fprintf(&b, "%s  %s\n\n", accentStyle.Render("PONY"), mutedStyle.Render(fmt.Sprintf("tasks  %d", len(m.tasks))))
 	if len(m.tasks) == 0 {
-		b.WriteString("No tasks in this session. Press : to run one, or ? for help.\n")
+		b.WriteString("No tasks in this session. Press : for a command, or ? for help.\n")
 	} else {
 		start, limit := visibleTasks(m, compact, showWordmark)
 		for i := start; i < len(m.tasks) && i < start+limit; i++ {
@@ -76,10 +76,24 @@ func renderTUI(m tuiModel) string {
 		}
 		b.WriteString("\n" + style.Render(ansi.Truncate(safeText(m.message), contentWidth, "…")) + "\n")
 	}
+	if m.agentOutput != "" {
+		lines := strings.Split(strings.TrimRight(m.agentOutput, "\n"), "\n")
+		maxLines := 8
+		if m.height > 0 {
+			maxLines = max(1, min(maxLines, m.height/3))
+		}
+		if len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		for i := range lines {
+			lines[i] = ansi.Truncate(safeText(lines[i]), contentWidth-2, "…")
+		}
+		b.WriteString(panelStyle.Render(strings.Join(lines, "\n")) + "\n")
+	}
 	if m.editing {
 		b.WriteString("\n" + accentStyle.Render(":") + " " + ansi.Truncate(safeText(m.command), max(1, contentWidth-4), "…") + "\n")
 	} else {
-		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": run  •  ? help  •  p sessions  •  v validate  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
+		b.WriteString("\n" + mutedStyle.Render(ansi.Truncate(": commands  •  ? help  •  p sessions  •  v validate  •  j/k select  •  s stop  •  R restart  •  c clean  •  r refresh  •  q quit", contentWidth, "…")) + "\n")
 	}
 	return b.String()
 }
@@ -99,6 +113,16 @@ func renderTUIHelp(m tuiModel) string {
 		"  Pony uses the current Git repository by default and creates a worktree.",
 		"  Add --repo PATH to choose another repo, or --validate COMMAND to run checks.",
 		"",
+		"Agent session commands (enter them after pressing :)",
+		"  start ID CMD [args...]     Start a separate agent process",
+		"  send ID TEXT              Send a line to an agent",
+		"  read ID                   Show recent agent output",
+		"  attach ID                 Use the agent in this terminal; Ctrl+\\ returns here",
+		"  resize ID ROWS COLS       Change the agent terminal size",
+		"  status                    Show agent process status (same as p)",
+		"  stop ID / restart ID      Stop or restart a task or agent",
+		`  Example: start demo codex -- "Fix the bug"`,
+		"",
 		"Task list keys",
 		"  j / ↓       Select the next task",
 		"  k / ↑       Select the previous task",
@@ -111,9 +135,7 @@ func renderTUIHelp(m tuiModel) string {
 		"  q           Quit Pony (running agents are stopped)",
 		"",
 		"Configured checks must pass for verified; without checks the task becomes completed.",
-		"The TUI can validate a stopped task (v) and show process status (p).",
-		"For session controls, use the CLI: pony --cli, then type help.",
-		"The CLI supports start, send, read, attach, resize, and detailed status.",
+		"The same task controls are available as : stop ID, : restart ID, : clean ID, and : validate ID.",
 		"",
 		"Press ?, Esc, Enter, or q to return.",
 	}
@@ -145,7 +167,7 @@ func renderSessionStatus(m tuiModel) string {
 }
 
 func isSuccessMessage(message string) bool {
-	for _, prefix := range []string{"started ", "stop ", "restart ", "clean "} {
+	for _, prefix := range []string{"started ", "sent ", "stopped ", "resized ", "restarted ", "stop ", "restart ", "clean ", "validate "} {
 		if strings.HasPrefix(message, prefix) {
 			return true
 		}
