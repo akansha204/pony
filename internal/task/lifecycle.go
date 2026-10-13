@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/akansha204/pony/internal/agent"
@@ -36,9 +37,11 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	case agent.StateCrashed:
 		task.State = StateFailed
 		m.tasks[id] = task
-		m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed")
-		m.record(task, event.TaskFailed, session.Generation, "task failed")
-		return task, fmt.Errorf("stop task %q: agent had already crashed", id)
+		recordErr := errors.Join(
+			m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed"),
+			m.record(task, event.TaskFailed, session.Generation, "task failed"),
+		)
+		return task, errors.Join(fmt.Errorf("stop task %q: agent had already crashed", id), recordErr)
 	case agent.StateStopped:
 		task.State = StateStopped
 	default:
@@ -46,7 +49,9 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	}
 
 	m.tasks[id] = task
-	m.record(task, event.RuntimeExited, session.Generation, "runtime stopped")
+	if err := m.record(task, event.RuntimeExited, session.Generation, "runtime stopped"); err != nil {
+		return task, err
+	}
 	return task, nil
 }
 
@@ -65,7 +70,9 @@ func (m *Manager) Complete(id TaskID, generation uint64) (Snapshot, error) {
 	}
 	task.State = StateCompleted
 	m.tasks[id] = task
-	m.record(task, event.TaskCompleted, generation, "task completed without validation")
+	if err := m.record(task, event.TaskCompleted, generation, "task completed without validation"); err != nil {
+		return task, err
+	}
 	return task, nil
 }
 
@@ -98,10 +105,14 @@ func (m *Manager) Restart(id TaskID) (Snapshot, error) {
 	task.SessionID = session.SessionID
 	task.State = StateRunning
 	m.tasks[id] = task
+	var recordErr error
 	if previous.State == agent.StateRunning || previous.State == agent.StateStopping {
-		m.record(task, event.RuntimeExited, previous.Generation, "runtime restarted")
+		recordErr = errors.Join(recordErr, m.record(task, event.RuntimeExited, previous.Generation, "runtime restarted"))
 	}
-	m.record(task, event.RuntimeStarted, session.Generation, "runtime started")
+	recordErr = errors.Join(recordErr, m.record(task, event.RuntimeStarted, session.Generation, "runtime started"))
+	if recordErr != nil {
+		return task, fmt.Errorf("task %q restarted but event recording failed: %w", id, recordErr)
+	}
 	return task, nil
 }
 
@@ -132,14 +143,21 @@ func (m *Manager) Refresh(id TaskID) (Snapshot, error) {
 		changed := task.State != StateFailed
 		task.State = StateFailed
 		if changed {
-			m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed")
-			m.record(task, event.TaskFailed, session.Generation, "task failed")
+			err := errors.Join(
+				m.record(task, event.RuntimeCrashed, session.Generation, "runtime crashed"),
+				m.record(task, event.TaskFailed, session.Generation, "task failed"),
+			)
+			m.tasks[id] = task
+			return task, err
 		}
 	case agent.StateStopped, agent.StateIdle:
 		changed := task.State != StateStopped
 		task.State = StateStopped
 		if changed {
-			m.record(task, event.RuntimeExited, session.Generation, "runtime exited")
+			if err := m.record(task, event.RuntimeExited, session.Generation, "runtime exited"); err != nil {
+				m.tasks[id] = task
+				return task, err
+			}
 		}
 	case agent.StateStarting, agent.StateRunning, agent.StateStopping:
 		task.State = StateRunning

@@ -121,18 +121,19 @@ func (a *app) run(opts runOptions) (task.Snapshot, error) {
 		return task.Snapshot{}, err
 	}
 	started, err := a.tasks.Start(created.ID, task.LaunchSpec{Command: opts.command, Args: opts.args})
-	if err != nil {
+	if err != nil && started.SessionID == "" {
 		return task.Snapshot{}, err
 	}
+	startErr := err
 	if _, err := a.agents.Write(agent.AgentID(opts.id), []byte(opts.goal+"\n")); err != nil {
-		_, _ = a.tasks.Stop(opts.id)
-		return task.Snapshot{}, fmt.Errorf("send goal to task %q: %w", opts.id, err)
+		_, stopErr := a.tasks.Stop(opts.id)
+		return started, errors.Join(fmt.Errorf("send goal to task %q: %w", opts.id, err), startErr, stopErr)
 	}
 	a.mu.Lock()
 	a.runs[opts.id] = &runState{steps: opts.steps}
 	a.mu.Unlock()
 	a.watch(opts.id)
-	return started, nil
+	return started, startErr
 }
 
 func (a *app) watch(id task.TaskID) {
@@ -170,11 +171,24 @@ func (a *app) watch(id task.TaskID) {
 			}
 			a.mu.Unlock()
 			snapshot, err := a.tasks.Refresh(id)
-			if err == nil && snapshot.State == task.StateStopped {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "pony: refresh task %q: %v\n", id, err)
+				a.mu.Lock()
+				if run := a.runs[id]; run != nil {
+					run.validating = false
+				}
+				a.mu.Unlock()
+				return
+			}
+			if snapshot.State == task.StateStopped {
 				if len(steps) > 0 {
-					_, _, _ = a.tasks.ValidateContext(a.ctx, id, steps)
+					if _, _, err := a.tasks.ValidateContext(a.ctx, id, steps); err != nil {
+						fmt.Fprintf(os.Stderr, "pony: validate task %q: %v\n", id, err)
+					}
 				} else {
-					_, _ = a.tasks.Complete(id, current.Generation)
+					if _, err := a.tasks.Complete(id, current.Generation); err != nil {
+						fmt.Fprintf(os.Stderr, "pony: complete task %q: %v\n", id, err)
+					}
 				}
 			}
 			a.mu.Lock()
@@ -214,9 +228,10 @@ func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
 	}
 	a.mu.Unlock()
 	snapshot, err := a.tasks.Restart(id)
-	if err != nil {
+	if err != nil && snapshot.SessionID == "" {
 		return snapshot, err
 	}
+	restartErr := err
 	if _, err := a.agents.Write(agent.AgentID(id), []byte(snapshot.Goal+"\n")); err != nil {
 		goalErr := fmt.Errorf("send goal after restarting task %q: %w", id, err)
 		a.mu.Lock()
@@ -226,7 +241,7 @@ func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
 		a.mu.Unlock()
 		stopErr := a.agents.Stop(agent.AgentID(id))
 		a.watch(id)
-		return snapshot, errors.Join(goalErr, stopErr)
+		return snapshot, errors.Join(restartErr, goalErr, stopErr)
 	}
 	a.mu.Lock()
 	if run := a.runs[id]; run != nil {
@@ -234,7 +249,7 @@ func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
 	}
 	a.mu.Unlock()
 	a.watch(id)
-	return snapshot, nil
+	return snapshot, restartErr
 }
 
 func (a *app) validate(id task.TaskID) (task.Snapshot, []validation.Result, error) {

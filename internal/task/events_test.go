@@ -1,6 +1,7 @@
 package task
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,12 @@ import (
 	"github.com/akansha204/pony/internal/event"
 	"github.com/akansha204/pony/internal/workspace"
 )
+
+type failingRecorder struct{ err error }
+
+func (r failingRecorder) Record(event.Event) (event.Event, error) {
+	return event.Event{}, r.err
+}
 
 func eventManager(t *testing.T) (*Manager, *event.MemoryStore, *workspace.Manager, *agent.Manager, string) {
 	t.Helper()
@@ -49,6 +56,41 @@ func TestTaskStartRecordsLifecycleEvents(t *testing.T) {
 	}
 	if got[2].SessionID != string(started.SessionID) || got[2].Generation != 1 {
 		t.Fatalf("session event = %+v", got[2])
+	}
+}
+
+func TestCreateReturnsEventRecordFailure(t *testing.T) {
+	tasks, _, _, _, repo := eventManager(t)
+	wantErr := errors.New("recorder unavailable")
+	tasks.events = failingRecorder{err: wantErr}
+	if _, err := tasks.Create(Spec{ID: "task", Goal: "goal", Repository: repo, BaseRef: "main"}); !errors.Is(err, wantErr) {
+		t.Fatalf("Create error = %v, want %v", err, wantErr)
+	}
+	if _, ok := tasks.Get("task"); ok {
+		t.Fatal("task was published even though its creation event was not recorded")
+	}
+}
+
+func TestStopReturnsEventRecordFailure(t *testing.T) {
+	tasks, _, workspaces, agents, repo := eventManager(t)
+	t.Cleanup(func() {
+		_ = agents.Stop("task")
+		_ = workspaces.Release(repo, "ws-task")
+	})
+	if _, err := tasks.Create(Spec{ID: "task", Goal: "goal", Repository: repo, BaseRef: "main"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := tasks.Start("task", LaunchSpec{Command: "sleep", Args: []string{"1000"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	wantErr := errors.New("recorder unavailable")
+	tasks.events = failingRecorder{err: wantErr}
+	got, err := tasks.Stop("task")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Stop error = %v, want %v", err, wantErr)
+	}
+	if got.State != StateStopped {
+		t.Fatalf("task state = %s, want stopped", got.State)
 	}
 }
 

@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/akansha204/pony/internal/agent"
@@ -42,9 +43,12 @@ func (m *Manager) ValidateContext(ctx context.Context, id TaskID, steps []valida
 		m.mu.Unlock()
 		return Snapshot{}, nil, fmt.Errorf("validate task %q: agent session is missing", id)
 	}
+	if err := m.record(task, event.ValidationStarted, session.Generation, "validation started"); err != nil {
+		m.mu.Unlock()
+		return task, nil, err
+	}
 	task.State = StateValidating
 	m.tasks[id] = task
-	m.record(task, event.ValidationStarted, session.Generation, "validation started")
 	m.mu.Unlock()
 
 	results := make([]validation.Result, 0, len(steps))
@@ -52,32 +56,39 @@ func (m *Manager) ValidateContext(ctx context.Context, id TaskID, steps []valida
 		result, err := m.validator.RunContext(ctx, task.WorkspacePath, step)
 		results = append(results, result)
 		if err != nil {
-			failed := m.finishValidation(task, session.Generation, false)
-			return failed, results, fmt.Errorf("validate task %q: %w", id, err)
+			failed, recordErr := m.finishValidation(task, session.Generation, false)
+			return failed, results, errors.Join(fmt.Errorf("validate task %q: %w", id, err), recordErr)
 		}
 		if !result.Succeeded() {
-			return m.finishValidation(task, session.Generation, false), results, nil
+			failed, recordErr := m.finishValidation(task, session.Generation, false)
+			return failed, results, recordErr
 		}
 	}
 
-	return m.finishValidation(task, session.Generation, true), results, nil
+	verified, recordErr := m.finishValidation(task, session.Generation, true)
+	return verified, results, recordErr
 }
 
-func (m *Manager) finishValidation(task Snapshot, generation uint64, passed bool) Snapshot {
+func (m *Manager) finishValidation(task Snapshot, generation uint64, passed bool) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	var recordErr error
 	if passed {
 		task.State = StateVerified
 		m.tasks[task.ID] = task
-		m.record(task, event.ValidationPassed, generation, "validation passed")
-		m.record(task, event.TaskCompleted, generation, "task completed")
-		return task
+		recordErr = errors.Join(
+			m.record(task, event.ValidationPassed, generation, "validation passed"),
+			m.record(task, event.TaskCompleted, generation, "task completed"),
+		)
+		return task, recordErr
 	}
 
 	task.State = StateFailed
 	m.tasks[task.ID] = task
-	m.record(task, event.ValidationFailed, generation, "validation failed")
-	m.record(task, event.TaskFailed, generation, "task failed")
-	return task
+	recordErr = errors.Join(
+		m.record(task, event.ValidationFailed, generation, "validation failed"),
+		m.record(task, event.TaskFailed, generation, "task failed"),
+	)
+	return task, recordErr
 }

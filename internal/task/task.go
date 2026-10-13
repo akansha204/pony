@@ -102,8 +102,10 @@ func (m *Manager) Create(spec Spec) (Snapshot, error) {
 	if _, exists := m.tasks[spec.ID]; exists {
 		return Snapshot{}, fmt.Errorf("task %q already exists", spec.ID)
 	}
+	if err := m.record(snapshot, event.TaskCreated, 0, "task created"); err != nil {
+		return Snapshot{}, err
+	}
 	m.tasks[spec.ID] = snapshot
-	m.record(snapshot, event.TaskCreated, 0, "task created")
 	return snapshot, nil
 }
 
@@ -195,21 +197,29 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 	task.SessionID = session.SessionID
 	task.State = StateRunning
 	m.tasks[id] = task
-	m.record(task, event.WorkspaceCreated, 0, "workspace created")
-	m.record(task, event.SessionStarted, session.Generation, "session started")
-	m.record(task, event.RuntimeStarted, session.Generation, "runtime started")
+	var recordErr error
+	recordErr = errors.Join(recordErr, m.record(task, event.WorkspaceCreated, 0, "workspace created"))
+	recordErr = errors.Join(recordErr, m.record(task, event.SessionStarted, session.Generation, "session started"))
+	recordErr = errors.Join(recordErr, m.record(task, event.RuntimeStarted, session.Generation, "runtime started"))
+	if recordErr != nil {
+		return task, fmt.Errorf("task %q started but event recording failed: %w", id, recordErr)
+	}
 	return task, nil
 }
 
-func (m *Manager) record(task Snapshot, eventType event.Type, generation uint64, message string) {
+func (m *Manager) record(task Snapshot, eventType event.Type, generation uint64, message string) error {
 	if m.events == nil {
-		return
+		return nil
 	}
-	_, _ = m.events.Record(event.Event{
+	_, err := m.events.Record(event.Event{
 		TaskID:     string(task.ID),
 		SessionID:  string(task.SessionID),
 		Generation: generation,
 		Type:       eventType,
 		Message:    message,
 	})
+	if err != nil {
+		return fmt.Errorf("record %s for task %q generation %d: %w", eventType, task.ID, generation, err)
+	}
+	return nil
 }
