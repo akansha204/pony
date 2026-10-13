@@ -114,6 +114,37 @@ func TestRunnerTimeoutKillsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestRunnerTimeoutBoundsWaitForEscapedChildPipes(t *testing.T) {
+	cwd := t.TempDir()
+	pidFile := filepath.Join(cwd, "escaped.pid")
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	started := time.Now()
+	result, _ := NewRunner().Run(cwd, Step{
+		Command: "sh",
+		Args:    []string{"-c", `setsid sh -c 'echo $$ > escaped.pid; exec sleep 30' & wait`},
+		Timeout: 100 * time.Millisecond,
+	})
+	if !result.TimedOut {
+		t.Fatalf("result.TimedOut = false, result = %+v", result)
+	}
+	if result.Succeeded() {
+		t.Fatalf("timed-out validation reported success: %+v", result)
+	}
+	if elapsed := time.Since(started); elapsed > validationWaitDelay+terminationWait+time.Second {
+		t.Fatalf("Run took %s after timeout, want it bounded near %s", elapsed, validationWaitDelay+terminationWait)
+	}
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Fatalf("escaped child did not start: %v", err)
+	}
+}
+
 func processAlive(pid int) bool {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {

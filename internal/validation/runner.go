@@ -13,6 +13,11 @@ import (
 
 type Runner struct{}
 
+const (
+	validationWaitDelay = 2 * time.Second
+	terminationWait     = 3 * time.Second
+)
+
 func NewRunner() *Runner {
 	return &Runner{}
 }
@@ -39,6 +44,9 @@ func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result,
 	cmd := exec.Command(step.Command, step.Args...)
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A descendant may inherit stdout/stderr and keep os/exec's copy
+	// goroutines open after the command exits. Bound that wait as well.
+	cmd.WaitDelay = validationWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -86,10 +94,18 @@ func (r *Runner) RunContext(ctx context.Context, cwd string, step Step) (Result,
 
 func terminateGroup(cmd *exec.Cmd, done <-chan error, started time.Time, stdout, stderr *bytes.Buffer, result Result) (Result, error) {
 	killErr := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	waitErr := <-done
-	result.Duration = time.Since(started)
-	result.Stdout = stdout.String()
-	result.Stderr = stderr.String()
+	var waitErr error
+	select {
+	case waitErr = <-done:
+		result.Duration = time.Since(started)
+		result.Stdout = stdout.String()
+		result.Stderr = stderr.String()
+	case <-time.After(terminationWait):
+		// Do not read stdout/stderr here: cmd.Wait may still have copy
+		// goroutines writing to them.
+		result.Duration = time.Since(started)
+		return result, fmt.Errorf("validation command %q did not settle after SIGKILL within %s", result.Step.Command, terminationWait)
+	}
 	if killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
 		return result, fmt.Errorf("kill validation process group: %w", killErr)
 	}
