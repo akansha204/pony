@@ -180,11 +180,11 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 		Env:     launch.Env,
 	})
 	if err != nil {
-		releaseErr := m.workspaces.Release(task.Repository, ws.ID)
-		if releaseErr != nil {
+		rollbackErr := m.workspaces.RollbackUnusedAllocation(ws)
+		if rollbackErr != nil {
 			return Snapshot{}, errors.Join(
 				fmt.Errorf("start task %q: %w", id, err),
-				fmt.Errorf("roll back workspace %q: %w", ws.ID, releaseErr),
+				fmt.Errorf("roll back workspace %q: %w", ws.ID, rollbackErr),
 			)
 		}
 		return Snapshot{}, fmt.Errorf("start task %q: %w", id, err)

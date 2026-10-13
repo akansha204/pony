@@ -23,6 +23,7 @@ type Workspace struct {
 	TaskID     string
 	Path       string
 	Branch     string
+	BaseCommit string
 	Repository string
 	Managed    bool
 }
