@@ -65,8 +65,8 @@ func (m *Manager) ValidateContext(ctx context.Context, id TaskID, steps []valida
 		}
 	}
 
-	verified, recordErr := m.finishValidation(task, session.Generation, true)
-	return verified, results, recordErr
+	checksPassed, recordErr := m.finishValidation(task, session.Generation, true)
+	return checksPassed, results, recordErr
 }
 
 func (m *Manager) finishValidation(task Snapshot, generation uint64, passed bool) (Snapshot, error) {
@@ -75,7 +75,7 @@ func (m *Manager) finishValidation(task Snapshot, generation uint64, passed bool
 
 	var recordErr error
 	if passed {
-		task.State = StateVerified
+		task.State = StateChecksPassed
 		m.tasks[task.ID] = task
 		recordErr = errors.Join(
 			m.record(task, event.ValidationPassed, generation, "validation passed"),

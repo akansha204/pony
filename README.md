@@ -91,8 +91,10 @@ repository. Use `--arg VALUE` for each agent argument,
 `--base-ref REF` to choose a base commit (default `HEAD`), and repeat
 `--validate "COMMAND"` when you want checks to run after the agent exits.
 Validation is optional; each check has a five-minute timeout. A task with
-checks becomes `verified` only when they all pass. Without checks, a clean
-agent exit marks the task `completed` without claiming it was verified.
+checks becomes `checks_passed` only when every configured command exits
+successfully. This confirms the checks passed; it does not prove the requested
+goal was achieved. Without checks, a clean agent exit marks the task
+`completed`.
 The working directory is still isolated in a new Git worktree based on the
 selected base ref; uncommitted changes in the original checkout are not copied.
 

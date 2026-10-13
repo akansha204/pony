@@ -57,8 +57,11 @@ func TestValidateMarksTaskVerifiedWhenEveryStepPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if got.State != StateVerified || len(results) != 2 {
+	if got.State != StateChecksPassed || len(results) != 2 {
 		t.Fatalf("validation = task %+v, results %+v", got, results)
+	}
+	if got.State != "checks_passed" {
+		t.Fatalf("state = %q, want checks_passed", got.State)
 	}
 	if results[0].Stdout != "checked" || results[1].Stdout != before.WorkspacePath+"\n" {
 		t.Fatalf("results = %+v", results)
@@ -74,7 +77,7 @@ func TestValidateMarksTaskVerifiedWhenEveryStepPasses(t *testing.T) {
 	if last[0].Type != event.ValidationStarted || last[1].Type != event.ValidationPassed || last[2].Type != event.TaskCompleted {
 		t.Fatalf("final events = %+v", last)
 	}
-	if refreshed, err := tasks.Refresh("task"); err != nil || refreshed.State != StateVerified {
+	if refreshed, err := tasks.Refresh("task"); err != nil || refreshed.State != StateChecksPassed {
 		t.Fatalf("Refresh after verification = %+v, %v", refreshed, err)
 	}
 }

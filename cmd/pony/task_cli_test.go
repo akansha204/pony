@@ -125,7 +125,7 @@ func TestRunCompletesAndValidatesInWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	got := waitCLIState(t, a, "task", task.StateVerified)
+	got := waitCLIState(t, a, "task", task.StateChecksPassed)
 	if got.WorkspacePath != started.WorkspacePath || got.WorkspacePath == repo {
 		t.Fatalf("workspace = %q", got.WorkspacePath)
 	}
@@ -315,7 +315,7 @@ func TestExplicitStopSkipsAutomaticValidation(t *testing.T) {
 		}
 	}
 	validated, _, err := a.validate("task")
-	if err != nil || validated.State != task.StateVerified {
+	if err != nil || validated.State != task.StateChecksPassed {
 		t.Fatalf("manual validation = %+v, %v", validated, err)
 	}
 }
@@ -407,8 +407,8 @@ func TestCLICommandRunsTaskToVerification(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("Pony: %v\nstdout: %s\nstderr: %s", err, output.String(), errorsOut.String())
 	}
-	if !strings.Contains(output.String(), "task running in") || !strings.Contains(output.String(), "task             verified") {
-		t.Fatalf("CLI output does not show verified task:\n%s", output.String())
+	if !strings.Contains(output.String(), "task running in") || !strings.Contains(output.String(), "task             checks_passed") {
+		t.Fatalf("CLI output does not show checks-passed task:\n%s", output.String())
 	}
 }
 
@@ -426,7 +426,7 @@ func TestStopWaitsForAutomaticValidation(t *testing.T) {
 	if _, err := a.stop("task"); err == nil {
 		t.Fatal("stop interrupted automatic validation")
 	}
-	waitCLIState(t, a, "task", task.StateVerified)
+	waitCLIState(t, a, "task", task.StateChecksPassed)
 }
 
 func TestShutdownCancelsActiveValidation(t *testing.T) {

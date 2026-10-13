@@ -138,7 +138,7 @@ func renderTUIHelp(m tuiModel) string {
 		"  q           Quit Pony (running agents are stopped)",
 		"  u           Install the latest tagged release when an update is available",
 		"",
-		"Configured checks must pass for verified; without checks the task becomes completed.",
+		"checks_passed means configured commands exited successfully; it does not prove the goal was met.",
 		"The same task controls are available as : stop ID, : restart ID, : clean ID, and : validate ID.",
 		"",
 		"Press ?, Esc, Enter, or q to return.",
@@ -204,7 +204,7 @@ func visibleTasks(m tuiModel, compact, showWordmark bool) (int, int) {
 func styleStatus(line string, state task.State) string {
 	var color string
 	switch state {
-	case task.StateRunning, task.StateVerified:
+	case task.StateRunning, task.StateChecksPassed:
 		color = "#62D6A7"
 	case task.StateCompleted:
 		color = "#62D6A7"

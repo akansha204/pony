@@ -570,7 +570,7 @@ Keep task state in memory first.
 pending
 running
 validating
-verified
+checks_passed
 failed
 stopped
 ```
@@ -697,9 +697,12 @@ pony run \
 ### Rule
 
 ``` text
-Task verified
+Task checks_passed
 =
-every required validation step succeeded
+every configured validation command exited successfully
+
+This confirms command results only; it does not establish that the task goal
+was achieved.
 ```
 
 ### Done when
@@ -738,7 +741,7 @@ agent exits
    ↓
 run validation
    ↓
-verified / failed
+checks_passed / failed
 ```
 
 CLI surface:

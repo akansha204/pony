@@ -22,7 +22,7 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 	if task.State == StateStopped {
 		return task, nil
 	}
-	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed || task.State == StateCompleted {
+	if task.State == StateValidating || task.State == StateChecksPassed || task.State == StateFailed || task.State == StateCompleted {
 		return Snapshot{}, fmt.Errorf("task %q is %s", id, task.State)
 	}
 	if err := m.agents.Stop(agent.AgentID(id)); err != nil {
@@ -56,7 +56,7 @@ func (m *Manager) Stop(id TaskID) (Snapshot, error) {
 }
 
 // Complete marks a normally exited task as completed when no validation was
-// configured for it. The state intentionally remains distinct from verified.
+// configured for it. The state intentionally remains distinct from checks_passed.
 func (m *Manager) Complete(id TaskID, generation uint64) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,7 +127,7 @@ func (m *Manager) Refresh(id TaskID) (Snapshot, error) {
 	if task.SessionID == "" {
 		return task, nil
 	}
-	if task.State == StateValidating || task.State == StateVerified || task.State == StateFailed || task.State == StateCompleted {
+	if task.State == StateValidating || task.State == StateChecksPassed || task.State == StateFailed || task.State == StateCompleted {
 		return task, nil
 	}
 

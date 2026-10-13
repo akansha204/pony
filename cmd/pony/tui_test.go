@@ -21,7 +21,7 @@ func TestTUIEmptyAndNavigation(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.View().Content), "No tasks") {
 		t.Fatal("empty screen did not explain how to start")
 	}
-	m.tasks = []task.Snapshot{{ID: "one", State: task.StateRunning}, {ID: "two", State: task.StateVerified}}
+	m.tasks = []task.Snapshot{{ID: "one", State: task.StateRunning}, {ID: "two", State: task.StateChecksPassed}}
 	next, _ := m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	m = next.(tuiModel)
 	if m.selected != 1 || !strings.Contains(ansi.Strip(m.View().Content), "Task: two") {

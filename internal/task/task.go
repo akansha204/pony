@@ -19,13 +19,16 @@ type TaskID string
 type State string
 
 const (
-	StatePending    State = "pending"
-	StateRunning    State = "running"
-	StateValidating State = "validating"
-	StateVerified   State = "verified"
-	StateFailed     State = "failed"
-	StateStopped    State = "stopped"
-	StateCompleted  State = "completed"
+	StatePending      State = "pending"
+	StateRunning      State = "running"
+	StateValidating   State = "validating"
+	StateChecksPassed State = "checks_passed"
+	// StateVerified is retained as a source-compatible alias. Passing checks
+	// does not prove that the task's goal was achieved.
+	StateVerified  State = StateChecksPassed
+	StateFailed    State = "failed"
+	StateStopped   State = "stopped"
+	StateCompleted State = "completed"
 )
 
 type Spec struct {
