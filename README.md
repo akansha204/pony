@@ -21,6 +21,33 @@ checks used by tests are Linux/Unix-specific behaviors. Cross-platform
 support is a later milestone (platform-tagged files such as
 `process_unix.go` / `process_windows.go`).
 
+## Install Pony
+
+Pony requires Go 1.26.4 or newer. Install the latest tagged version with:
+
+```sh
+go install github.com/akansha204/pony/cmd/pony@latest
+```
+
+Then run `pony` to open the TUI, or `pony --cli` to open the CLI.
+Check the installed version with `pony --version`.
+
+Go puts installed commands in `GOBIN` when it is set, otherwise in
+`GOPATH/bin` (usually `~/go/bin`). That directory must be on your shell's
+`PATH`. To add the default Go bin directory for the current terminal:
+
+```sh
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+Add that line to your shell startup file to keep it after opening a new
+terminal (for example, `~/.bashrc` for Bash or `~/.zshrc` for Zsh). If you
+set a custom `GOBIN`, add that directory instead.
+
+`@latest` installs the latest tagged release; it does not mean the newest
+unreleased commit on `master`. To install a specific release, replace
+`@latest` with its tag, for example `@v0.2.0`.
+
 ## Development
 
 Requires Go 1.26+.
@@ -31,6 +58,9 @@ make run        # open the TUI in a terminal
 make test       # run tests with the race detector
 make check      # fmt + tidy + vet + test (mirrors CI)
 ```
+
+`make build` and `make run` include the current Git version in `pony --version`.
+For the release and version-tagging steps, see [docs/versioning.md](docs/versioning.md).
 
 ## Run a coding task
 

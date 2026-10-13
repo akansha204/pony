@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,6 +21,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println("Pony " + currentVersion())
+		return
+	}
+
 	root, err := defaultWorkspaceRoot()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "workspace root:", err)
@@ -37,7 +43,7 @@ func main() {
 		}
 	}()
 	if len(os.Args) > 1 && (len(os.Args) != 2 || os.Args[1] != "--cli") {
-		fmt.Fprintln(os.Stderr, "usage: pony [--cli]")
+		fmt.Fprintln(os.Stderr, "usage: pony [--cli | --version]")
 		return
 	}
 	if len(os.Args) == 1 && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
@@ -272,6 +278,20 @@ func main() {
 			break
 		}
 	}
+}
+
+// version is set for local builds with Makefile ldflags. Versioned go install
+// builds fall back to the module version embedded by the Go toolchain.
+var version = "dev"
+
+func currentVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
 }
 
 func printCLIHelp() {
