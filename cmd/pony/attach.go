@@ -22,6 +22,71 @@ const (
 	drainGrace        = 250 * time.Millisecond
 )
 
+// attachInputFilter removes terminal mouse reports from input forwarded to
+// the agent. Agent output enables mouse reporting in the user's terminal, so
+// mouse events arrive here as bytes and would otherwise be typed at the prompt.
+type attachInputFilter struct {
+	pending    []byte
+	discardCSI bool
+	discardX10 int
+}
+
+func (f *attachInputFilter) feed(b byte) []byte {
+	if f.discardCSI {
+		if b >= 0x40 && b <= 0x7e {
+			f.discardCSI = false
+		}
+		return nil
+	}
+	if f.discardX10 > 0 {
+		f.discardX10--
+		return nil
+	}
+	if len(f.pending) == 0 {
+		if b == 0x1b {
+			f.pending = append(f.pending, b)
+			return nil
+		}
+		return []byte{b}
+	}
+	if len(f.pending) == 1 {
+		if b == '[' {
+			f.pending = append(f.pending, b)
+			return nil
+		}
+		out := append(f.pending, b)
+		f.pending = nil
+		return out
+	}
+
+	// Hold only a possible mouse prefix. Other CSI key sequences pass through
+	// byte-for-byte once their first parameter byte identifies them as non-mouse.
+	f.pending = nil
+	switch b {
+	case '<': // SGR mouse: CSI < button ; x ; y M/m
+		f.discardCSI = true
+		return nil
+	case 'M': // Legacy X10 mouse: CSI M followed by three data bytes.
+		f.discardX10 = 3
+		return nil
+	default:
+		return []byte{0x1b, '[', b}
+	}
+}
+
+func (f *attachInputFilter) flush() []byte {
+	// A lone ESC may be the complete Escape key. Keep ESC [ buffered until its
+	// next byte arrives; flushing it on a timeout can leak a split mouse report.
+	if len(f.pending) > 1 {
+		return nil
+	}
+	out := append([]byte(nil), f.pending...)
+	f.pending = nil
+	return out
+}
+
+const disableMouseTracking = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+
 type attachSignalError struct{ signal os.Signal }
 
 func (e *attachSignalError) Error() string {
@@ -60,6 +125,10 @@ func withRawTerminal(in *os.File, run func() error) error {
 func bridgeTerminal(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-chan os.Signal) error {
 	resizeTo(in, mgr, id)
 	term := newTermOut(out)
+	// The agent's mouse mode is not useful through this byte-stream bridge:
+	// mouse reports are fed back into the agent as input. Keep the outer
+	// terminal in keyboard-only mode while attached.
+	_ = term.write([]byte(disableMouseTracking))
 	done := make(chan struct{})
 	copied := make(chan struct{})
 	fatal := make(chan os.Signal, 1)
@@ -137,6 +206,7 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 
 	// Keep input after Ctrl+\ available to the REPL.
 	var buf [1]byte
+	var inputFilter attachInputFilter
 	for {
 		select {
 		case sig := <-fatal:
@@ -157,6 +227,11 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 			return err
 		}
 		if ready == 0 {
+			if pending := inputFilter.flush(); len(pending) > 0 {
+				if _, err := mgr.Write(id, pending); err != nil {
+					return nil
+				}
+			}
 			continue
 		}
 
@@ -173,8 +248,10 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 		if buf[0] == detachKey {
 			return nil
 		}
-		if _, err := mgr.Write(id, buf[:n]); err != nil {
-			return nil
+		if filtered := inputFilter.feed(buf[0]); len(filtered) > 0 {
+			if _, err := mgr.Write(id, filtered); err != nil {
+				return nil
+			}
 		}
 	}
 }
@@ -200,6 +277,11 @@ func copyOutput(mgr *agent.Manager, id agent.AgentID, out *termOut, done <-chan 
 		n, err := mgr.ReadTimeout(id, buf, attachPollTimeout)
 		if n > 0 {
 			if out.write(buf[:n]) != nil {
+				return
+			}
+			// Agent output may re-enable mouse tracking. Reset it after each
+			// chunk so the outer terminal does not emit reports as typed input.
+			if out.write([]byte(disableMouseTracking)) != nil {
 				return
 			}
 			continue
