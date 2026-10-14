@@ -81,20 +81,6 @@ func renderTUI(m tuiModel) string {
 		}
 		b.WriteString("\n" + style.Render(ansi.Truncate(safeText(m.message), contentWidth, "…")) + "\n")
 	}
-	if m.agentOutput != "" {
-		lines := strings.Split(strings.TrimRight(m.agentOutput, "\n"), "\n")
-		maxLines := 8
-		if m.height > 0 {
-			maxLines = max(1, min(maxLines, m.height/3))
-		}
-		if len(lines) > maxLines {
-			lines = lines[len(lines)-maxLines:]
-		}
-		for i := range lines {
-			lines[i] = ansi.Truncate(safeText(lines[i]), contentWidth-2, "…")
-		}
-		b.WriteString(panelStyle.Render(strings.Join(lines, "\n")) + "\n")
-	}
 	if m.editing {
 		b.WriteString("\n" + accentStyle.Render(":") + " " + ansi.Truncate(safeText(m.command), max(1, contentWidth-4), "…") + "\n")
 	} else {
@@ -122,7 +108,7 @@ func renderTUIHelp(m tuiModel) string {
 		"  start ID CMD [args...]     Start a separate agent process",
 		"  send ID TEXT              Send a line to an agent",
 		"  prompt ID TEXT            Submit a prompt (optional: --wait idle|blocked|done)",
-		"  read ID                   Show recent agent output",
+		"  read ID                   Open readable agent output and scrollback",
 		"  attach ID                 Use the agent in this terminal; Ctrl+\\ returns here",
 		"  resize ID ROWS COLS       Change the agent terminal size",
 		"  status                    Show agent process status (same as p)",
@@ -170,7 +156,7 @@ func renderSessionStatus(m tuiModel) string {
 			if attention {
 				marker = "!!"
 			}
-			line := fmt.Sprintf("%s %-20s pid=%-7d runtime=%s kind=%s agent=%s fgpid=%d process=%s", marker, session.AgentID, session.PID, session.State, session.AgentKind, session.AgentState, session.ForegroundPID, session.ForegroundProcess)
+			line := fmt.Sprintf("%s %-20s pid=%-7d runtime=%s agent=%s agent_state=%s fgpid=%d process=%s", marker, session.AgentID, session.PID, session.State, session.AgentKind, session.AgentState, session.ForegroundPID, session.ForegroundProcess)
 			if attention {
 				line += "  NEEDS ATTENTION"
 			}
@@ -181,8 +167,64 @@ func renderSessionStatus(m tuiModel) string {
 			b.WriteString(line + "\n")
 		}
 	}
-	b.WriteString("\nSession status is process-level information. Press p, Esc, Enter, or q to return.\n")
+	b.WriteString("\nRuntime is process status; agent_state is inferred from terminal text. Press p, Esc, Enter, or q to return.\n")
 	return panelStyle.Render(b.String())
+}
+
+func renderAgentOutput(m tuiModel) string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	contentWidth := max(1, width-6)
+	lines := agentOutputLinesAtWidth(m.agentOutput, contentWidth)
+	pageSize := agentOutputPageSize(m)
+	maxScroll := max(0, len(lines)-pageSize)
+	start := min(max(0, m.outputScroll), maxScroll)
+	end := min(start+pageSize, len(lines))
+	var b strings.Builder
+	b.WriteString("PONY AGENT OUTPUT — " + string(m.agentOutputID) + "\n")
+	if m.message != "" {
+		b.WriteString(mutedStyle.Render(ansi.Truncate(safeText(m.message), contentWidth, "…")) + "\n")
+	}
+	b.WriteString("\n")
+	if len(lines) == 0 {
+		b.WriteString("No visible screen text.\n")
+	} else {
+		b.WriteString(panelStyle.Width(contentWidth).Render(strings.Join(lines[start:end], "\n")) + "\n")
+		fmt.Fprintf(&b, "Lines %d–%d of %d\n", start+1, end, len(lines))
+	}
+	fmt.Fprintf(&b, "\n%s\n", mutedStyle.Render("↑/↓ or j/k scroll • PgUp/PgDn page • Home/End jump • Esc close"))
+	return b.String()
+}
+
+func agentOutputLines(m tuiModel) []string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	return agentOutputLinesAtWidth(m.agentOutput, max(1, width-6))
+}
+
+func agentOutputPageSize(m tuiModel) int {
+	height := m.height
+	if height <= 0 {
+		height = 24
+	}
+	return max(1, height-7)
+}
+
+func agentOutputLinesAtWidth(output string, width int) []string {
+	if output == "" {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
+		line = safeText(line)
+		wrapped := strings.Split(ansi.Wrap(line, width, " "), "\n")
+		lines = append(lines, wrapped...)
+	}
+	return lines
 }
 
 func isSuccessMessage(message string) bool {

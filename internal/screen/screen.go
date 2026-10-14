@@ -257,7 +257,7 @@ func (m *Model) Snapshot() Snapshot {
 	for i, line := range b.grid {
 		visible[i] = strings.TrimRight(string(line), " ")
 	}
-	back := append([]string(nil), m.main.lines...)
+	back := append([]string(nil), b.lines...)
 	return Snapshot{
 		Rows: m.rows, Columns: m.cols, CursorRow: b.row, CursorColumn: b.col,
 		Visible: visible, Scrollback: back, Text: strings.Join(visible, "\n"),
@@ -290,7 +290,7 @@ func (m *Model) lineFeed() {
 	removed := b.grid[0]
 	copy(b.grid, b.grid[1:])
 	b.grid[m.rows-1] = blankLine(m.cols)
-	if !m.useAlt && m.maxScrollback > 0 {
+	if m.maxScrollback > 0 {
 		b.lines = append(b.lines, strings.TrimRight(string(removed), " "))
 		if extra := len(b.lines) - m.maxScrollback; extra > 0 {
 			copy(b.lines, b.lines[extra:])
@@ -447,7 +447,7 @@ func (m *Model) scrollUp(b *buffer) {
 	removed := b.grid[0]
 	copy(b.grid, b.grid[1:])
 	b.grid[m.rows-1] = blankLine(m.cols)
-	if b == &m.main && m.maxScrollback > 0 {
+	if m.maxScrollback > 0 {
 		b.lines = append(b.lines, strings.TrimRight(string(removed), " "))
 		if extra := len(b.lines) - m.maxScrollback; extra > 0 {
 			copy(b.lines, b.lines[extra:])

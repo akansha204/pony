@@ -328,7 +328,7 @@ func main() {
 
 		case "status":
 			for _, snap := range mgr.ViewSnapshots() {
-				fmt.Printf("%-10s pid=%-7d runtime=%s kind=%s agent=%s attention=%s fgpid=%d process=%s\n", snap.AgentID, snap.PID, snap.State, snap.AgentKind, snap.AgentState, sessionAttention(snap.AgentState), snap.ForegroundPID, snap.ForegroundProcess)
+				fmt.Printf("%-10s pid=%-7d runtime=%s agent=%s agent_state=%s attention=%s fgpid=%d process=%s\n", snap.AgentID, snap.PID, snap.State, snap.AgentKind, snap.AgentState, sessionAttention(snap.AgentState), snap.ForegroundPID, snap.ForegroundProcess)
 			}
 
 		case "quit", "exit":

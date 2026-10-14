@@ -120,7 +120,7 @@ detector yet. Everything reports `unknown`.
 ``` text
 pony> start a sleep 100
 pony> status
-a    pid=1234   state=running   agent=unknown
+a    pid=1234   state=running   agent_state=unknown
 ```
 
 ------------------------------------------------------------------------
@@ -205,12 +205,12 @@ known coding agent.
 
 ``` text
 pony> status
-a    pid=1234   runtime=running   kind=codex   agent=unknown   fgpid=1234   process=codex
+a    pid=1234   runtime=running   agent=codex   agent_state=unknown   fgpid=1234   process=codex
 ```
 
 The kind and foreground process are best-effort observations. If `/proc`
 changes during a lookup, the process is unrecognized, or the PTY does not
-report a foreground group, status shows `kind=unknown` and empty process
+report a foreground group, status shows `agent=unknown` and empty process
 details. Supported executable names are `codex`, `opencode`, `claude`,
 and `aider`.
 
@@ -382,8 +382,8 @@ Make state visible where people already look: the REPL and the TUI.
 
 ``` text
 pony> status
-reviewer   pid=…  runtime=running  kind=codex  agent=blocked  attention=needs-you
-builder    pid=…  runtime=running  kind=opencode  agent=working  attention=no
+reviewer   pid=…  runtime=running  agent=codex  agent_state=blocked  attention=needs-you
+builder    pid=…  runtime=running  agent=opencode  agent_state=working  attention=no
 ```
 
 and the TUI highlights the blocked one. A session that finishes while

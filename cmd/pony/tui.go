@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -76,8 +75,11 @@ type tuiModel struct {
 	message          string
 	showHelp         bool
 	showSessions     bool
+	showAgentOutput  bool
 	attachID         agent.AgentID
+	agentOutputID    agent.AgentID
 	agentOutput      string
+	outputScroll     int
 	updateCheckDone  bool
 	updateReady      bool
 	updateInstalling bool
@@ -141,6 +143,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "p", "esc", "q", "enter":
 				m.showSessions = false
+			}
+			return m, nil
+		}
+		if m.showAgentOutput {
+			switch msg.String() {
+			case "esc", "q", "enter":
+				m.showAgentOutput = false
+			case "up", "k":
+				m.outputScroll = max(0, m.outputScroll-1)
+			case "down", "j":
+				m.outputScroll++
+			case "pgup":
+				m.outputScroll = max(0, m.outputScroll-agentOutputPageSize(m)-1)
+			case "pgdown":
+				m.outputScroll += agentOutputPageSize(m) - 1
+			case "home", "g":
+				m.outputScroll = 0
+			case "end", "G":
+				m.outputScroll = max(0, len(agentOutputLines(m))-agentOutputPageSize(m))
 			}
 			return m, nil
 		}
@@ -242,15 +263,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.message = "read " + string(msg.id) + ": " + msg.err.Error()
 			m.agentOutput = ""
+			m.showAgentOutput = false
 		} else if msg.out == "" {
-			m.message = "no output available for " + string(msg.id)
+			m.message = "no visible screen text for " + string(msg.id)
 			m.agentOutput = ""
+			m.showAgentOutput = false
 		} else {
-			m.message = "read " + string(msg.id)
+			m.message = "latest visible terminal screen"
 			if msg.dropped > 0 {
-				m.message += fmt.Sprintf("; %d earlier output bytes were dropped", msg.dropped)
+				m.message += fmt.Sprintf("; screen capture may be incomplete (%d bytes dropped)", msg.dropped)
 			}
+			m.agentOutputID = msg.id
 			m.agentOutput = msg.out
+			m.outputScroll = max(0, len(agentOutputLines(m))-agentOutputPageSize(m))
+			m.showAgentOutput = true
 		}
 	case agentPromptMsg:
 		m.actionPending = false
@@ -555,26 +581,12 @@ func (m *tuiModel) startUpdate() tea.Cmd {
 }
 
 func readAgentOutput(mgr *agent.Manager, id agent.AgentID) (string, uint64, error) {
-	const chunkWait = 200 * time.Millisecond
-	buf := make([]byte, 4096)
-	var out strings.Builder
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		n, err := mgr.ReadTimeout(id, buf, chunkWait)
-		if n > 0 {
-			out.Write(buf[:n])
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return out.String(), mgr.OutputDroppedBytes(id), nil
-			}
-			return out.String(), mgr.OutputDroppedBytes(id), err
-		}
-		if n == 0 {
-			break
-		}
+	snapshot, err := mgr.ScreenSnapshot(id)
+	if err != nil {
+		return "", 0, err
 	}
-	return out.String(), mgr.OutputDroppedBytes(id), nil
+	lines := append(snapshot.Scrollback, snapshot.Visible...)
+	return strings.TrimRight(strings.Join(lines, "\n"), " \n"), snapshot.DroppedBytes, nil
 }
 
 func (m tuiModel) taskByID(id task.TaskID) (task.Snapshot, bool) {
@@ -609,6 +621,8 @@ func (m tuiModel) View() tea.View {
 		content = renderTUIHelp(m)
 	} else if m.showSessions {
 		content = renderSessionStatus(m)
+	} else if m.showAgentOutput {
+		content = renderAgentOutput(m)
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true

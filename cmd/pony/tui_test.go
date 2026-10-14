@@ -282,7 +282,7 @@ func TestTUIReadReportsDroppedOutput(t *testing.T) {
 	m := tuiModel{}
 	next, _ := m.Update(agentReadMsg{id: "demo", out: "recent", dropped: 4096})
 	m = next.(tuiModel)
-	if !strings.Contains(m.message, "4096 earlier output bytes were dropped") || m.agentOutput != "recent" {
+	if !strings.Contains(m.message, "screen capture may be incomplete (4096 bytes dropped)") || m.agentOutput != "recent" {
 		t.Fatalf("read status=%q output=%q", m.message, m.agentOutput)
 	}
 }
@@ -294,7 +294,7 @@ func TestTUISessionStatusShowsAgentIdentityAndState(t *testing.T) {
 		{AgentID: "done", PID: 45, State: agent.StateRunning, AgentState: agent.AgentStateDone, AgentKind: agent.AgentKindOpenCode},
 	}}
 	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "runtime=running kind=codex agent=unknown fgpid=43 process=codex") {
+	if !strings.Contains(view, "runtime=running agent=codex agent_state=unknown fgpid=43 process=codex") {
 		t.Fatalf("session status view = %q", view)
 	}
 	if strings.Count(view, "NEEDS ATTENTION") != 2 || !strings.Contains(view, "!! blocked") || !strings.Contains(view, "!! done") {

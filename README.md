@@ -190,15 +190,19 @@ attach reviewer
 ```
 
 `status` lists sessions and their process and agent states. `read` shows recent
-output captured from the session. The CLI's `screen` command shows the latest
-visible terminal screen; Pony warns you if its screen view may be incomplete.
+output in the CLI and opens a readable, scrollable view of captured terminal
+output and scrollback in the TUI. The CLI's `screen` command shows the current
+visible screen;
+Pony warns you if its screen view may be incomplete.
 `attach` gives you direct keyboard control of the agent's terminal. Press
 Ctrl+\\ to detach and return to Pony.
 
 In the TUI, press `p` to open the session status panel, or press `:` and enter
 `status`. Use `read`, `attach`, and the other session commands the same way:
-press `:` first, then type the command. Press `?` at any time for the built-in
-help. The TUI does not currently offer the CLI's `screen` command.
+press `:` first, then type the command. The TUI's `read` view shows the current
+terminal output with line wrapping and keyboard scrolling. Press `?` at any
+time for the built-in help. The TUI does not currently offer the CLI's `screen`
+command.
 
 ### Understand session status
 
@@ -206,14 +210,15 @@ Pony reports two different kinds of state:
 
 - `runtime` describes the process Pony started: for example, `running` or
   `exited`. This is about the program itself.
-- `agent` is Pony's best guess about what the agent is doing: for example,
+- `agent` is the program Pony recognized, such as `codex` or `claude`.
+- `agent_state` is Pony's best guess about what that program is doing: for example,
   `working`, `idle`, `blocked`, `done`, or `unknown`.
 
-For example, an agent can have `runtime=running` and `agent=blocked`: the
-program is still alive, but it appears to be waiting for you. `attention` is
-`needs-you` when the agent is blocked or has reached `done`. In the TUI these
-sessions are highlighted so they are easier to spot. Opening the status panel
-also acknowledges a `done` state and clears that attention marker.
+For example, `runtime=running agent=codex agent_state=blocked` means the
+Codex process is still alive, but Pony thinks it may be waiting for you.
+`attention` is `needs-you` when the agent is blocked or has reached `done`. In
+the TUI these sessions are highlighted so they are easier to spot. Opening the
+status panel also acknowledges a `done` state and clears that attention marker.
 
 The agent state comes from text Pony can see on the terminal screen, using the
 profile for that agent type. It is an estimate, not a message from the agent
@@ -246,11 +251,11 @@ pony> prompt reviewer --wait idle "Explain how login works in this project"
 reviewer reached idle
 pony> read reviewer
 pony> status
-reviewer   pid=... runtime=running kind=codex agent=idle attention=none ...
+reviewer   pid=... runtime=running agent=codex agent_state=idle attention=none ...
 pony> prompt reviewer --wait done "Make the agreed change and run the checks"
 reviewer reached done
 pony> status
-reviewer   pid=... runtime=running kind=codex agent=done attention=needs-you ...
+reviewer   pid=... runtime=running agent=codex agent_state=done attention=needs-you ...
 pony> attach reviewer
 ```
 
