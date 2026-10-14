@@ -19,6 +19,7 @@ var (
 	selectedStyle  = lipgloss.NewStyle().Reverse(true).Bold(true)
 	panelStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#526675")).Padding(0, 1)
 	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
+	infoStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#62C7E8"))
 	successStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#62D6A7"))
 	attentionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 )
@@ -51,7 +52,12 @@ func renderTUI(m tuiModel) string {
 		start, limit := visibleTasks(m, compact, showWordmark)
 		for i := start; i < len(m.tasks) && i < start+limit; i++ {
 			snapshot := m.tasks[i]
-			line := fmt.Sprintf("  %-20s %s", snapshot.ID, snapshot.State)
+			line := fmt.Sprintf("  %-14s task=%-12s", snapshot.ID, snapshot.State)
+			if session, ok := agentSessionForTask(m.agents, snapshot.ID); ok {
+				line += " agent_state=" + string(session.AgentState)
+			} else {
+				line += " agent_state=unknown"
+			}
 			line = ansi.Truncate(line, contentWidth, "…")
 			if i == m.selected {
 				line = selectedStyle.Render(line)
@@ -75,8 +81,10 @@ func renderTUI(m tuiModel) string {
 		}
 	}
 	if m.message != "" {
-		style := errorStyle
-		if isSuccessMessage(m.message) {
+		style := infoStyle
+		if isErrorMessage(m.message) {
+			style = errorStyle
+		} else if isSuccessMessage(m.message) {
 			style = successStyle
 		}
 		b.WriteString("\n" + style.Render(ansi.Truncate(safeText(m.message), contentWidth, "…")) + "\n")
@@ -106,8 +114,10 @@ func renderTUIHelp(m tuiModel) string {
 		"",
 		"Agent session commands (enter them after pressing :)",
 		"  start ID CMD [args...]     Start a separate agent process",
-		"  send ID TEXT              Send a line to an agent",
-		"  prompt ID TEXT            Submit a prompt (optional: --wait idle|blocked|done)",
+		"  send ID TEXT              Submit one line; return immediately",
+		"  prompt ID TEXT            Submit a request; optionally wait for agent_state",
+		"  prompt ID --wait STATE TEXT  STATE: idle, blocked, or done (2m timeout)",
+		"  send and prompt both press Enter; prompt --wait waits for the inferred state",
 		"  read ID                   Open readable agent output and scrollback",
 		"  attach ID                 Use the agent in this terminal; Ctrl+\\ returns here",
 		"  resize ID ROWS COLS       Change the agent terminal size",
@@ -127,6 +137,9 @@ func renderTUIHelp(m tuiModel) string {
 		"  q           Quit Pony (running agents are stopped)",
 		"  u           Install the latest tagged release when an update is available",
 		"",
+		"agent_state is inferred from visible terminal text; unknown means Pony could not tell.",
+		"read shows a snapshot. Check agent_state first; use prompt --wait done to wait, or read again later.",
+		"idle = ready for input; blocked = waiting for you; done = a turn appears complete.",
 		"checks_passed means configured commands exited successfully; it does not prove the goal was met.",
 		"The same task controls are available as : stop ID, : restart ID, : clean ID, and : validate ID.",
 		"",
@@ -184,6 +197,8 @@ func renderAgentOutput(m tuiModel) string {
 	end := min(start+pageSize, len(lines))
 	var b strings.Builder
 	b.WriteString("PONY AGENT OUTPUT — " + string(m.agentOutputID) + "\n")
+	state := m.agentOutputState
+	b.WriteString(mutedStyle.Render("agent_state="+string(state)+"; snapshot may change while the agent is working") + "\n")
 	if m.message != "" {
 		b.WriteString(mutedStyle.Render(ansi.Truncate(safeText(m.message), contentWidth, "…")) + "\n")
 	}
@@ -234,6 +249,47 @@ func isSuccessMessage(message string) bool {
 		}
 	}
 	return false
+}
+
+func isErrorMessage(message string) bool {
+	for _, prefix := range []string{"run:", "start:", "send:", "prompt:", "read:", "resize:", "update:", "input:", "usage:", "unknown command"} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	for _, prefix := range []string{"started ", "stop ", "restart ", "clean "} {
+		if strings.HasPrefix(message, prefix) && strings.Contains(message, ": ") {
+			return true
+		}
+	}
+	if strings.HasPrefix(message, "read ") && strings.Contains(message, ": ") {
+		return true
+	}
+	if strings.HasPrefix(message, "prompt ") && strings.Contains(message, ": ") {
+		return true
+	}
+	if strings.HasPrefix(message, "validate ") && strings.Contains(message, ": ") {
+		_, detail, ok := strings.Cut(message, ": ")
+		if !ok {
+			return false
+		}
+		for _, state := range []string{"pending", "running", "validating", "completed", "checks_passed", "failed", "stopped"} {
+			if strings.HasPrefix(detail, state) {
+				return state == "failed"
+			}
+		}
+		return true
+	}
+	return strings.HasPrefix(message, "update check failed")
+}
+
+func agentSessionForTask(sessions []agent.SessionSnapshot, id task.TaskID) (agent.SessionSnapshot, bool) {
+	for _, session := range sessions {
+		if string(session.AgentID) == string(id) {
+			return session, true
+		}
+	}
+	return agent.SessionSnapshot{}, false
 }
 
 func visibleTasks(m tuiModel, compact, showWordmark bool) (int, int) {

@@ -169,14 +169,19 @@ Waiting is based on Pony observing the agent work and then observing the
 requested state. It can take up to two minutes. In the TUI, the wait happens
 in the background, so you can still use the interface while it waits.
 
-Use `send` when you want to type a line into the agent's terminal directly:
+`send` and `prompt` both submit the text and press Enter. `send` is a quick
+one-line submission that returns immediately:
 
 ```text
 send reviewer "Please explain that last error"
 ```
 
-`send` presses Enter after the line. Use `prompt` for a prompt that Pony should
-submit as a prompt; use `send` for direct terminal input.
+Use `prompt` when you want to treat the text as a request and optionally wait
+for the agent's inferred state. For example, `--wait idle` waits until the
+agent appears ready again; `--wait blocked` waits for it to need your attention;
+and `--wait done` waits for Pony to detect a completed turn. The wait has a
+two-minute timeout and does not submit the prompt again. These states are
+inferred from terminal text and can be `unknown` if Pony cannot recognize it.
 
 ### See what is happening
 
@@ -189,11 +194,15 @@ screen reviewer
 attach reviewer
 ```
 
-`status` lists sessions and their process and agent states. `read` shows recent
+`status` lists sessions and their process and agent states. The main TUI task
+list also shows `agent_state` beside each task when it can identify the session.
+`read` shows recent
 output in the CLI and opens a readable, scrollable view of captured terminal
 output and scrollback in the TUI. The CLI's `screen` command shows the current
 visible screen;
 Pony warns you if its screen view may be incomplete.
+The TUI read view is a snapshot: if `agent_state=working`, read again after it
+becomes `idle` or `done` to see the later output.
 `attach` gives you direct keyboard control of the agent's terminal. Press
 Ctrl+\\ to detach and return to Pony.
 
