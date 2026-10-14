@@ -313,8 +313,9 @@ func (m *Manager) writeToSession(id AgentID, expected *session, data []byte) (in
 
 // Prompt submits one line of input to a running session. If the terminal has
 // bracketed paste enabled, the text is wrapped in its paste markers before a
-// separate Enter is sent. A requested state wait observes Working before it
-// accepts the requested settled state, so an old idle screen cannot satisfy it.
+// separate carriage return is sent as the Enter key. A requested state wait
+// observes Working before accepting the requested state, so an old idle screen
+// cannot satisfy it.
 func (m *Manager) Prompt(ctx context.Context, id AgentID, text string, waitFor AgentState, timeout time.Duration) (AgentState, error) {
 	if strings.TrimSpace(text) == "" {
 		return AgentStateUnknown, fmt.Errorf("prompt text must not be empty")
@@ -346,7 +347,7 @@ func (m *Manager) Prompt(ctx context.Context, id AgentID, text string, waitFor A
 	} else if n != len(payload) {
 		return AgentStateUnknown, fmt.Errorf("send prompt to agent %q: short write (%d of %d bytes)", id, n, len(payload))
 	}
-	if n, err := m.writeToSession(id, s, []byte("\n")); err != nil {
+	if n, err := m.writeToSession(id, s, []byte("\r")); err != nil {
 		return AgentStateUnknown, fmt.Errorf("submit prompt to agent %q: %w", id, err)
 	} else if n != 1 {
 		return AgentStateUnknown, fmt.Errorf("submit prompt to agent %q: short write (%d of 1 byte)", id, n)

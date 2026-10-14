@@ -31,10 +31,11 @@ type taskActionMsg struct {
 }
 
 type agentReadMsg struct {
-	id      agent.AgentID
-	out     string
-	dropped uint64
-	err     error
+	id         agent.AgentID
+	out        string
+	dropped    uint64
+	agentState agent.AgentState
+	err        error
 }
 
 type agentPromptMsg struct {
@@ -79,6 +80,7 @@ type tuiModel struct {
 	attachID         agent.AgentID
 	agentOutputID    agent.AgentID
 	agentOutput      string
+	agentOutputState agent.AgentState
 	outputScroll     int
 	updateCheckDone  bool
 	updateReady      bool
@@ -265,16 +267,21 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentOutput = ""
 			m.showAgentOutput = false
 		} else if msg.out == "" {
-			m.message = "no visible screen text for " + string(msg.id)
+			m.message = fmt.Sprintf("no visible screen text for %s (agent_state=%s; try again later)", msg.id, msg.agentState)
 			m.agentOutput = ""
+			m.agentOutputState = msg.agentState
 			m.showAgentOutput = false
 		} else {
-			m.message = "latest visible terminal screen"
+			m.message = "latest terminal snapshot; agent_state=" + string(msg.agentState)
+			if msg.agentState == agent.AgentStateWorking {
+				m.message += "; still working — read again when idle or done"
+			}
 			if msg.dropped > 0 {
 				m.message += fmt.Sprintf("; screen capture may be incomplete (%d bytes dropped)", msg.dropped)
 			}
 			m.agentOutputID = msg.id
 			m.agentOutput = msg.out
+			m.agentOutputState = msg.agentState
 			m.outputScroll = max(0, len(agentOutputLines(m))-agentOutputPageSize(m))
 			m.showAgentOutput = true
 		}
@@ -409,7 +416,7 @@ func (m *tuiModel) submit() tea.Cmd {
 				m.message = "send: not available"
 			} else {
 				text := strings.Join(fields[2:], " ")
-				_, err = m.agentsAPI.Write(agent.AgentID(fields[1]), []byte(text+"\n"))
+				_, err = m.agentsAPI.Prompt(context.Background(), agent.AgentID(fields[1]), text, "", 0)
 				if err != nil {
 					m.message = "send: " + err.Error()
 				} else {
@@ -444,7 +451,8 @@ func (m *tuiModel) submit() tea.Cmd {
 				mgr, id := m.agentsAPI, agent.AgentID(fields[1])
 				cmd = func() tea.Msg {
 					out, dropped, err := readAgentOutput(mgr, id)
-					return agentReadMsg{id: id, out: out, dropped: dropped, err: err}
+					state := agentStateFor(mgr.Snapshots(), id)
+					return agentReadMsg{id: id, out: out, dropped: dropped, agentState: state, err: err}
 				}
 			}
 		case "attach":
@@ -587,6 +595,15 @@ func readAgentOutput(mgr *agent.Manager, id agent.AgentID) (string, uint64, erro
 	}
 	lines := append(snapshot.Scrollback, snapshot.Visible...)
 	return strings.TrimRight(strings.Join(lines, "\n"), " \n"), snapshot.DroppedBytes, nil
+}
+
+func agentStateFor(sessions []agent.SessionSnapshot, id agent.AgentID) agent.AgentState {
+	for _, session := range sessions {
+		if session.AgentID == id {
+			return session.AgentState
+		}
+	}
+	return agent.AgentStateUnknown
 }
 
 func (m tuiModel) taskByID(id task.TaskID) (task.Snapshot, bool) {

@@ -55,7 +55,7 @@ func (d *promptTestDriver) Write(_ *driver.Handle, data []byte) (int, error) {
 	d.writes = append(d.writes, append([]byte(nil), data...))
 	onSubmit := d.onSubmit
 	d.mu.Unlock()
-	if string(data) == "\n" && onSubmit != nil {
+	if string(data) == "\r" && onSubmit != nil {
 		onSubmit()
 	}
 	return len(data), nil
@@ -115,7 +115,7 @@ func TestPromptSubmitsTextAndExactlyOneEnter(t *testing.T) {
 		t.Fatalf("Prompt: %v", err)
 	}
 	writes := d.recordedWrites()
-	if len(writes) != 2 || string(writes[0]) != "explain this" || string(writes[1]) != "\n" {
+	if len(writes) != 2 || string(writes[0]) != "explain this" || string(writes[1]) != "\r" {
 		t.Fatalf("writes = %q, want prompt text then one Enter", writes)
 	}
 }
@@ -131,7 +131,7 @@ func TestPromptUsesBracketedPasteAndSubmitsOnce(t *testing.T) {
 	}
 	writes := d.recordedWrites()
 	want := "\x1b[200~line one\nline two\x1b[201~"
-	if len(writes) != 2 || string(writes[0]) != want || string(writes[1]) != "\n" {
+	if len(writes) != 2 || string(writes[0]) != want || string(writes[1]) != "\r" {
 		t.Fatalf("writes = %q, want bracketed paste and one Enter", writes)
 	}
 }

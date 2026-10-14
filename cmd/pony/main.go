@@ -250,7 +250,7 @@ func main() {
 			}
 			id := agent.AgentID(fields[1])
 			text := strings.Join(fields[2:], " ")
-			if _, err := mgr.Write(id, []byte(text+"\n")); err != nil {
+			if _, err := mgr.Prompt(context.Background(), id, text, "", 0); err != nil {
 				fmt.Println("send:", err)
 				continue
 			}
@@ -374,9 +374,11 @@ Task commands:
 
 Agent session commands:
   start <id> <cmd> [args...]   Start a named interactive program session
-  send <id> <text>             Send text followed by Enter
-  prompt <id> <text>           Send a prompt followed by Enter
-  prompt <id> --wait STATE TEXT  Send a prompt and wait (idle, blocked, done; 2m timeout)
+  send <id> <text>             Submit one line; return immediately
+  prompt <id> <text>           Submit a request; return immediately
+  prompt <id> --wait STATE TEXT  Submit and wait for idle, blocked, or done (2m timeout)
+      send and prompt both press Enter; prompt --wait additionally waits for agent_state
+      idle = ready; blocked = waiting for you; done = turn appears complete
   read <id>                    Show buffered terminal output
   screen <id>                  Show the latest modeled terminal screen
   attach <id>                  Type directly into a running session; Ctrl+\\ detaches

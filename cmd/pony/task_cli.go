@@ -125,7 +125,7 @@ func (a *app) run(opts runOptions) (task.Snapshot, error) {
 		return task.Snapshot{}, err
 	}
 	startErr := err
-	if _, err := a.agents.Write(agent.AgentID(opts.id), []byte(opts.goal+"\n")); err != nil {
+	if _, err := a.agents.Prompt(context.Background(), agent.AgentID(opts.id), opts.goal, "", 0); err != nil {
 		_, stopErr := a.tasks.Stop(opts.id)
 		goalErr := fmt.Errorf(
 			"send goal to task %q: %w; task remains allocated; use `list` to inspect it, `stop %s` if it is still running, and `clean %s` after it stops",
@@ -239,7 +239,7 @@ func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
 		return snapshot, err
 	}
 	restartErr := err
-	if _, err := a.agents.Write(agent.AgentID(id), []byte(snapshot.Goal+"\n")); err != nil {
+	if _, err := a.agents.Prompt(context.Background(), agent.AgentID(id), snapshot.Goal, "", 0); err != nil {
 		goalErr := fmt.Errorf("send goal after restarting task %q: %w", id, err)
 		a.mu.Lock()
 		if run := a.runs[id]; run != nil {
