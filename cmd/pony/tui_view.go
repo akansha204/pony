@@ -243,7 +243,7 @@ func agentOutputLinesAtWidth(output string, width int) []string {
 }
 
 func isSuccessMessage(message string) bool {
-	for _, prefix := range []string{"started ", "sent ", "stopped ", "resized ", "restarted ", "stop ", "restart ", "clean ", "validate "} {
+	for _, prefix := range []string{"started ", "sent ", "prompt sent to ", "stopped ", "resized ", "restarted ", "stop ", "restart ", "clean ", "validate "} {
 		if strings.HasPrefix(message, prefix) {
 			return true
 		}

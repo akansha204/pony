@@ -70,6 +70,16 @@ func TestTUIPromptCommandRunsAsynchronously(t *testing.T) {
 	}
 }
 
+func TestPromptSuccessMessageUsesSuccessStyle(t *testing.T) {
+	message := "prompt sent to backend"
+	if !isSuccessMessage(message) {
+		t.Fatalf("isSuccessMessage(%q) = false, want true", message)
+	}
+	if isErrorMessage(message) {
+		t.Fatalf("isErrorMessage(%q) = true, want false", message)
+	}
+}
+
 func TestTUIStartsInTerminal(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIHelperProcess$")
 	cmd.Env = append(os.Environ(), "PONY_TUI_TEST_HELPER=1", "XDG_DATA_HOME="+t.TempDir())
