@@ -271,6 +271,16 @@ func TestAttachPTYForwardsControlKeys(t *testing.T) {
 	}
 }
 
+func TestAttachForwardsEscapeAfterShortDelay(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 24, 80)
+	startShell(t, m, "escape", "stty raw -echo; dd bs=1 count=1 2>/dev/null | od -An -tx1; sleep 30")
+	p.start(t, m, "escape")
+	p.write(t, []byte{0x1b})
+	p.waitFor(t, "1b", time.Second)
+	p.detach(t)
+}
+
 func TestAttachPTYReattachOutputAndAgentIsolation(t *testing.T) {
 	m := agent.NewManager(driver.NewPTYDriver())
 	p := openAttachPTY(t, 30, 100)
@@ -306,6 +316,78 @@ func TestAttachPTYReattachOutputAndAgentIsolation(t *testing.T) {
 	if !okSecond || finalSecond.State != agent.StateRunning || finalSecond.PID != second.PID || finalSecond.Generation != second.Generation {
 		t.Errorf("second agent changed: start=%+v final=%+v exists=%v", second, finalSecond, okSecond)
 	}
+}
+
+func TestAttachRedrawsCurrentAlternateScreenAfterOutputBufferDrops(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 30, 100)
+	script := "printf '\\033[?1049h\\033[?1000h\\033[?1006h\\033[?2004h\\033[2J\\033[HATTACH_CURRENT_SCREEN\\n'; i=0; while [ \"$i\" -lt 12000 ]; do printf '\\033[?25l'; i=$((i + 1)); done; stty raw -echo; dd bs=1 count=1 2>/dev/null | od -An -tx1; dd bs=1 count=6 2>/dev/null | od -An -tx1; sleep 30"
+	startShell(t, m, "screen", script)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for m.OutputDroppedBytes("screen") == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if dropped := m.OutputDroppedBytes("screen"); dropped == 0 {
+		t.Fatal("test agent output did not overflow the recent-output buffer")
+	}
+
+	p.start(t, m, "screen")
+	output := p.waitFor(t, "ATTACH_CURRENT_SCREEN", 3*time.Second)
+	if !strings.Contains(output, "\x1b[?1049h") {
+		t.Fatal("attach did not enter the agent's alternate screen")
+	}
+	if !strings.Contains(output, "\x1b[?1000h") || !strings.Contains(output, "\x1b[?1006h") || !strings.Contains(output, "\x1b[?2004h") {
+		t.Fatal("attach did not restore the agent's mouse and bracketed-paste modes")
+	}
+	if strings.Contains(output, "earlier output bytes were dropped") {
+		t.Fatal("attach showed a dropped-output warning instead of redrawing the current screen")
+	}
+	p.write(t, []byte("x"))
+	p.waitFor(t, "78", 3*time.Second)
+	p.write(t, []byte("\x1b[<0;4;5M"))
+	p.waitFor(t, "1b 5b 3c 30 3b 34", 3*time.Second)
+	p.detach(t)
+}
+
+func TestAttachCleanupLeavesAlternateScreenEnteredAfterSnapshot(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 30, 100)
+	startShell(t, m, "late-alt", "read -r line; printf '\\033[?1049h\\033[?1003hLATE_ALT_STARTED\\n'; dd bs=1 count=1 2>/dev/null; sleep 30")
+	p.start(t, m, "late-alt")
+	p.write(t, []byte("go\n"))
+	p.waitFor(t, "LATE_ALT_STARTED", 3*time.Second)
+	p.detach(t)
+	output := string(p.seen)
+	if !strings.Contains(output, "\x1b[?1049l") {
+		t.Fatal("attach cleanup did not leave alternate screen entered after initial snapshot")
+	}
+	for _, mode := range []string{"9", "1000", "1002", "1003", "1004", "1005", "1006", "1015", "1016", "2004"} {
+		if !strings.Contains(output, "\x1b[?"+mode+"l") {
+			t.Errorf("attach output did not reset terminal mode %s", mode)
+		}
+	}
+}
+
+func TestAttachMouseSessionDoesNotLeakReportsIntoFollowingKeyboardSession(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 30, 100)
+	startShell(t, m, "mouse-app", "stty raw -echo; printf '\\033[?1000h\\033[?1006hMOUSE_READY\\n'; dd bs=1 count=10 2>/dev/null | od -An -tx1; sleep 30")
+	startShell(t, m, "keyboard-app", "stty raw -echo; dd bs=1 count=1 2>/dev/null | od -An -tx1; printf KEYBOARD_OK; sleep 30")
+
+	p.start(t, m, "mouse-app")
+	p.waitFor(t, "MOUSE_READY", 3*time.Second)
+	p.write(t, []byte("\x1b[<0;4;5Mx"))
+	p.waitFor(t, "1b 5b 3c 30 3b 34 3b 35 4d 78", 3*time.Second)
+	p.detach(t)
+
+	p.start(t, m, "keyboard-app")
+	p.write(t, []byte("\x1b[<35;12;14Mx"))
+	p.waitFor(t, "KEYBOARD_OK", 3*time.Second)
+	if strings.Contains(string(p.seen), "1b 5b 3c 33 35") {
+		t.Fatal("unsolicited mouse report reached the keyboard-only session")
+	}
+	p.detach(t)
 }
 
 func TestTermOutPreservesBytesWithoutAddingLineEndings(t *testing.T) {

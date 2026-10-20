@@ -90,6 +90,24 @@ directory's repository by default. Add `--repo PATH` to choose a different
 repository. Use `--arg VALUE` for each agent argument,
 `--base-ref REF` to choose a base commit (default `HEAD`), and repeat
 `--validate "COMMAND"` when you want checks to run after the agent exits.
+Pony passes the goal at process launch for `opencode` (`--prompt`), `codex`
+(initial prompt), `claude` (initial prompt), and `aider` (`--message`). Aider's
+message mode processes one turn and exits. For another program, put a single
+whole `--arg '{goal}'` where that program accepts its initial goal. For
+example, a wrapper that takes a positional goal after `--` can use
+`--arg -- --arg '{goal}'`. Pony replaces that one argument with the exact goal
+text. It does not interpolate the goal into a shell script. An unknown command
+without this placeholder is rejected before Pony creates a task or worktree.
+Use the placeholder for custom positional arguments or subcommands of the
+built-in agents as well.
+`restart ID` uses the same resolved launch arguments, including the goal.
+
+`running` means the agent process started. It does not confirm that the agent
+accepted the goal or began work; authentication, project trust, or another
+startup prompt may still need attention. Use `list`/`status`, `read`, or
+`attach` to inspect the session. `agent_state` is inferred from visible output
+and may be `unknown`.
+
 Validation is optional; each check has a five-minute timeout. A task with
 checks becomes `checks_passed` only when every configured command exits
 successfully. This confirms the checks passed; it does not prove the requested
@@ -196,15 +214,20 @@ attach reviewer
 
 `status` lists sessions and their process and agent states. The main TUI task
 list also shows `agent_state` beside each task when it can identify the session.
-`read` shows recent
-output in the CLI and opens a readable, scrollable view of captured terminal
-output and scrollback in the TUI. The CLI's `screen` command shows the current
-visible screen;
-Pony warns you if its screen view may be incomplete.
-The TUI read view is a snapshot: if `agent_state=working`, read again after it
+`read` shows a plain-text snapshot of the modeled terminal screen and scrollback
+in the CLI, and opens a scrollable snapshot in the TUI. It does not replay the
+agent's terminal controls or consume the output needed for attachment. The
+CLI's `screen` command shows only the current visible screen. Pony warns you if
+its screen view may be incomplete.
+Both read views are snapshots: if `agent_state=working`, read again after it
 becomes `idle` or `done` to see the later output.
 `attach` gives you direct keyboard control of the agent's terminal. Press
 Ctrl+\\ to detach and return to Pony.
+
+Pony restores each attached session's mouse, focus, and paste settings and
+clears them when returning to its prompt. Mouse reports are forwarded only to
+sessions that requested them. Terminal startup queries are handled by Pony
+even while detached; keyboard input uses the legacy terminal protocol.
 
 In the TUI, press `p` to open the session status panel, or press `:` and enter
 `status`. Use `read`, `attach`, and the other session commands the same way:

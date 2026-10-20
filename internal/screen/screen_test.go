@@ -1,6 +1,7 @@
 package screen
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,48 @@ func TestBracketedPasteModeTracksTerminalControls(t *testing.T) {
 	m.Feed([]byte("\x1b[?2004l"))
 	if m.Snapshot().BracketedPaste {
 		t.Fatal("bracketed paste mode should be disabled")
+	}
+}
+
+func TestInteractiveTerminalModesAreIncludedInSnapshot(t *testing.T) {
+	m := New(2, 12, 4)
+	m.Feed([]byte("\x1b[?1000h\x1b[?1005h\x1b[?1006h\x1b[?1015h\x1b[?1016h\x1b[?1004h\x1b[?2004h"))
+	s := m.Snapshot()
+	if !reflect.DeepEqual(s.MouseModes, []int{1000, 1005, 1006, 1015, 1016}) || !s.FocusReporting || !s.BracketedPaste {
+		t.Fatalf("interactive terminal modes = %+v", s)
+	}
+	m.Feed([]byte("\x1b[?1000l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l\x1b[?2004l"))
+	s = m.Snapshot()
+	if len(s.MouseModes) != 0 || s.FocusReporting || s.BracketedPaste {
+		t.Fatalf("disabled interactive terminal modes = %+v", s)
+	}
+}
+
+func TestInputModesSeparatesMouseTrackingFromEncoding(t *testing.T) {
+	m := New(2, 12, 4)
+	m.Feed([]byte("\x1b[?1006h\x1b[?1015h\x1b[?1004h"))
+	mouse, focus := m.InputModes()
+	if mouse || !focus {
+		t.Fatalf("InputModes after encoding-only modes = (%v,%v), want (false,true)", mouse, focus)
+	}
+	m.Feed([]byte("\x1b[?1002h"))
+	mouse, focus = m.InputModes()
+	if !mouse || !focus {
+		t.Fatalf("InputModes after tracking mode = (%v,%v), want (true,true)", mouse, focus)
+	}
+}
+
+func TestKittyKeyboardSequencesDoNotRestoreCursor(t *testing.T) {
+	m := New(3, 12, 4)
+	m.Feed([]byte("\x1b[2;5H\x1b[s\x1b[1;1H\x1b[>7u\x1b[?u\x1b[<u\x1b[=1u"))
+	s := m.Snapshot()
+	if s.CursorRow != 0 || s.CursorColumn != 0 {
+		t.Fatalf("cursor after Kitty sequences = (%d,%d), want unchanged at origin", s.CursorRow, s.CursorColumn)
+	}
+	m.Feed([]byte("\x1b[u"))
+	s = m.Snapshot()
+	if s.CursorRow != 1 || s.CursorColumn != 4 {
+		t.Fatalf("cursor after plain CSI u = (%d,%d), want saved position (1,4)", s.CursorRow, s.CursorColumn)
 	}
 }
 

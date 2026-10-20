@@ -62,13 +62,14 @@ type Handle struct {
 	readMu  sync.Mutex
 	writeMu sync.Mutex
 
-	done    chan struct{} //closed by Wait when the process dies
-	closing chan struct{} // closed by Wait before it tears down output
-	proc    *os.Process
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser // optional; Write feeds the process here
-	stdout  io.ReadCloser  // optional; Read drains the process here
-	master  *os.File       // optional; the PTY master when on a terminal
+	done     chan struct{} //closed by Wait when the process dies
+	closing  chan struct{} // closed by Wait before it tears down output
+	proc     *os.Process
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser // optional; Write feeds the process here
+	stdout   io.ReadCloser  // optional; Read drains the process here
+	master   *os.File       // optional; the PTY master when on a terminal
+	masterFD int            // cached nonblocking fd, valid only while master != nil
 }
 
 type Driver interface {
@@ -79,6 +80,13 @@ type Driver interface {
 	Resize(h *Handle, rows, cols uint16) error
 	Stop(ctx context.Context, h *Handle) error
 	Wait(h *Handle) ExitResult
+}
+
+// InterruptibleWriter is implemented by drivers that can cancel protocol
+// replies when a session ends. It is intended for small terminal responses
+// sent from a background writer, not for regular user input.
+type InterruptibleWriter interface {
+	WriteInterruptible(h *Handle, data []byte, cancel <-chan struct{}) (int, error)
 }
 
 type ProcessDriver struct {
@@ -208,10 +216,15 @@ func (d *ProcessDriver) ReadTimeout(h *Handle, p []byte, timeout time.Duration) 
 	defer h.readMu.Unlock()
 
 	h.stateMu.RLock()
-	f := h.master
-	if f == nil {
-		f, _ = h.stdout.(*os.File)
+	if h.master != nil {
+		fd := h.masterFD
+		h.stateMu.RUnlock()
+		if fd < 0 {
+			return 0, fmt.Errorf("%w: process %d has no PTY", ErrClosed, h.PID)
+		}
+		return readPTYTimeout(h, fd, p, timeout)
 	}
+	f, _ := h.stdout.(*os.File)
 	h.stateMu.RUnlock()
 	if f == nil {
 		return 0, fmt.Errorf("%w: process %d has no pollable output", ErrClosed, h.PID)
@@ -341,6 +354,7 @@ func (d *ProcessDriver) Wait(h *Handle) ExitResult {
 	h.stdin = nil
 	h.stdout = nil
 	h.master = nil
+	h.masterFD = -1
 	h.stateMu.Unlock()
 
 	if stdin != nil {

@@ -29,6 +29,63 @@ type runOptions struct {
 	steps   []validation.Step
 }
 
+// resolveGoalLaunch passes the goal as one process argument. A custom command
+// must name the goal's argument position explicitly; writing into a new TUI's
+// terminal can race its startup and silently lose the request.
+func resolveGoalLaunch(opts runOptions) (task.LaunchSpec, error) {
+	args := append([]string(nil), opts.args...)
+	placeholder := -1
+	for i, arg := range args {
+		if arg == "{goal}" {
+			if placeholder >= 0 {
+				return task.LaunchSpec{}, fmt.Errorf("use {goal} in exactly one --arg")
+			}
+			placeholder = i
+		} else if strings.Contains(arg, "{goal}") {
+			return task.LaunchSpec{}, fmt.Errorf("{goal} must occupy a whole --arg; interpolation is not supported")
+		}
+	}
+	if placeholder >= 0 {
+		args[placeholder] = opts.goal
+		return task.LaunchSpec{Command: opts.command, Args: args}, nil
+	}
+	switch strings.ToLower(filepath.Base(opts.command)) {
+	case "opencode":
+		for _, arg := range args {
+			if arg == "--" || arg == "--prompt" || strings.HasPrefix(arg, "--prompt=") {
+				return task.LaunchSpec{}, fmt.Errorf("opencode arguments conflict with the built-in goal adapter; place {goal} in one --arg")
+			}
+		}
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			return task.LaunchSpec{}, fmt.Errorf("opencode positional arguments and subcommands require one --arg '{goal}' at the goal position")
+		}
+		args = append(args, "--prompt="+opts.goal)
+	case "codex":
+		for _, arg := range args {
+			if arg == "--" {
+				return task.LaunchSpec{}, fmt.Errorf("codex arguments conflict with the built-in goal adapter; place {goal} in one --arg")
+			}
+		}
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			return task.LaunchSpec{}, fmt.Errorf("codex positional arguments and subcommands require one --arg '{goal}' at the goal position")
+		}
+		args = append(args, "--", opts.goal)
+	case "claude":
+		if len(args) != 0 {
+			return task.LaunchSpec{}, fmt.Errorf("claude with custom arguments requires one --arg '{goal}' at the goal position")
+		}
+		args = append(args, "--", opts.goal)
+	case "aider":
+		if len(args) != 0 {
+			return task.LaunchSpec{}, fmt.Errorf("aider with custom arguments requires one --arg '{goal}' at the goal position")
+		}
+		args = append(args, "--message="+opts.goal)
+	default:
+		return task.LaunchSpec{}, fmt.Errorf("no built-in goal adapter for %q; add --arg '{goal}' at the command's goal argument position", opts.command)
+	}
+	return task.LaunchSpec{Command: opts.command, Args: args}, nil
+}
+
 func parseRun(fields []string) (runOptions, error) {
 	opts := runOptions{baseRef: "HEAD", repo: "."}
 	for i := 0; i < len(fields); i++ {
@@ -113,6 +170,10 @@ func newApp(root string) (*app, error) {
 }
 
 func (a *app) run(opts runOptions) (task.Snapshot, error) {
+	launch, err := resolveGoalLaunch(opts)
+	if err != nil {
+		return task.Snapshot{}, err
+	}
 	if _, exists := a.agents.Get(agent.AgentID(opts.id)); exists {
 		return task.Snapshot{}, fmt.Errorf("agent %q already exists", opts.id)
 	}
@@ -120,22 +181,19 @@ func (a *app) run(opts runOptions) (task.Snapshot, error) {
 	if err != nil {
 		return task.Snapshot{}, err
 	}
-	started, err := a.tasks.Start(created.ID, task.LaunchSpec{Command: opts.command, Args: opts.args})
+	started, err := a.tasks.Start(created.ID, launch)
 	if err != nil && started.SessionID == "" {
+		// Preserve a workspace that could not be rolled back for inspection.
+		if started.WorkspaceID != "" {
+			return started, errors.Join(err, fmt.Errorf("task %q retains workspace %q; use list to inspect it and clean %s when safe", opts.id, started.WorkspacePath, opts.id))
+		}
+		// Start could not launch a session and rolled back its new workspace.
+		if cleanErr := a.tasks.Clean(created.ID); cleanErr != nil {
+			return started, errors.Join(err, fmt.Errorf("clean failed launch %q: %w", opts.id, cleanErr))
+		}
 		return task.Snapshot{}, err
 	}
 	startErr := err
-	if _, err := a.agents.Prompt(context.Background(), agent.AgentID(opts.id), opts.goal, "", 0); err != nil {
-		_, stopErr := a.tasks.Stop(opts.id)
-		goalErr := fmt.Errorf(
-			"send goal to task %q: %w; task remains allocated; use `list` to inspect it, `stop %s` if it is still running, and `clean %s` after it stops",
-			opts.id,
-			err,
-			opts.id,
-			opts.id,
-		)
-		return started, errors.Join(goalErr, startErr, stopErr)
-	}
 	a.mu.Lock()
 	a.runs[opts.id] = &runState{steps: opts.steps}
 	a.mu.Unlock()
@@ -238,25 +296,13 @@ func (a *app) restart(id task.TaskID) (task.Snapshot, error) {
 	if err != nil && snapshot.SessionID == "" {
 		return snapshot, err
 	}
-	restartErr := err
-	if _, err := a.agents.Prompt(context.Background(), agent.AgentID(id), snapshot.Goal, "", 0); err != nil {
-		goalErr := fmt.Errorf("send goal after restarting task %q: %w", id, err)
-		a.mu.Lock()
-		if run := a.runs[id]; run != nil {
-			run.stopRequested = true
-		}
-		a.mu.Unlock()
-		stopErr := a.agents.Stop(agent.AgentID(id))
-		a.watch(id)
-		return snapshot, errors.Join(restartErr, goalErr, stopErr)
-	}
 	a.mu.Lock()
 	if run := a.runs[id]; run != nil {
 		run.stopRequested = false
 	}
 	a.mu.Unlock()
 	a.watch(id)
-	return snapshot, restartErr
+	return snapshot, err
 }
 
 func (a *app) validate(id task.TaskID) (task.Snapshot, []validation.Result, error) {

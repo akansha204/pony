@@ -7,8 +7,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/akansha204/pony/internal/agent"
+	"github.com/akansha204/pony/internal/driver"
 )
 
 func tempFileWith(t *testing.T, content string) *os.File {
@@ -26,6 +28,37 @@ func tempFileWith(t *testing.T, content string) *os.File {
 	t.Cleanup(func() { _ = f.Close() })
 
 	return f
+}
+
+func TestReadAgentOutputUsesModeledScreenInsteadOfRawControls(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	if _, err := m.Start(agent.AgentSpec{ID: "safe-read", Command: "sh", Args: []string{"-c", "printf '\\033[?1000hSAFE_READ\\n'; sleep 30"}}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop("safe-read") })
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, err := m.ScreenSnapshot("safe-read")
+		if err == nil && strings.Contains(snapshot.Text, "SAFE_READ") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	text, _, err := readAgentOutput(m, "safe-read")
+	if err != nil {
+		t.Fatalf("readAgentOutput: %v", err)
+	}
+	if !strings.Contains(text, "SAFE_READ") || strings.Contains(text, "\x1b") {
+		t.Fatalf("read output %q should contain modeled text without raw terminal controls", text)
+	}
+}
+
+func TestSafeScreenLinesRemovesC1ControlsAndPreservesRows(t *testing.T) {
+	got := strings.Join(safeScreenLines("first\u009bsecond\nthird"), "\n")
+	want := "first second\nthird"
+	if got != want {
+		t.Fatalf("safe screen output %q, want %q", got, want)
+	}
 }
 
 func TestLineReaderReturnsLinesWithoutNewlines(t *testing.T) {

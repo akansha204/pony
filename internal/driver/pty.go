@@ -41,6 +41,14 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 		slave.Close()
 		return nil, err
 	}
+	// Fd may switch Go's pollable file into blocking mode. Capture it once,
+	// then use only raw nonblocking syscalls for the PTY for its full lifetime.
+	masterFD := int(master.Fd())
+	if err := unix.SetNonblock(masterFD, true); err != nil {
+		master.Close()
+		slave.Close()
+		return nil, fmt.Errorf("set PTY master nonblocking: %w", err)
+	}
 
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Cwd
@@ -63,27 +71,77 @@ func (d *PTYDriver) Start(ctx context.Context, spec Spec) (*Handle, error) {
 	}
 
 	return &Handle{
-		PID:     cmd.Process.Pid,
-		done:    make(chan struct{}),
-		closing: make(chan struct{}),
-		proc:    cmd.Process,
-		cmd:     cmd,
-		master:  master,
+		PID:      cmd.Process.Pid,
+		done:     make(chan struct{}),
+		closing:  make(chan struct{}),
+		proc:     cmd.Process,
+		cmd:      cmd,
+		master:   master,
+		masterFD: masterFD,
 	}, nil
 }
 
 func (d *PTYDriver) Write(h *Handle, data []byte) (int, error) {
+	return d.writePTY(h, data, nil)
+}
+
+// WriteInterruptible sends terminal protocol responses and also stops when
+// either its session reader or the PTY process closes.
+func (d *PTYDriver) WriteInterruptible(h *Handle, data []byte, cancel <-chan struct{}) (int, error) {
+	return d.writePTY(h, data, cancel)
+}
+
+func (d *PTYDriver) writePTY(h *Handle, data []byte, cancel <-chan struct{}) (int, error) {
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
 
-	// Held across the write so Wait cannot close the master mid-write.
 	h.stateMu.RLock()
-	defer h.stateMu.RUnlock()
-
-	if h.master == nil {
+	fd := h.masterFD
+	if h.master == nil || fd < 0 {
+		h.stateMu.RUnlock()
 		return 0, fmt.Errorf("%w: process %d is not on a terminal", ErrClosed, h.PID)
 	}
-	return h.master.Write(data)
+	defer h.stateMu.RUnlock()
+
+	written := 0
+	for written < len(data) {
+		select {
+		case <-cancel:
+			return written, fmt.Errorf("%w: terminal response canceled", ErrClosed)
+		case <-h.closing:
+			return written, fmt.Errorf("%w: process %d output closed", ErrClosed, h.PID)
+		default:
+		}
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT | unix.POLLERR | unix.POLLHUP}}
+		n, err := unix.Poll(fds, 50)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return written, err
+		}
+		if n == 0 {
+			continue
+		}
+		if fds[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+			return written, fmt.Errorf("%w: process %d terminal is closed", ErrClosed, h.PID)
+		}
+		if fds[0].Revents&unix.POLLOUT == 0 {
+			continue
+		}
+		count, err := unix.Write(fd, data[written:])
+		if err == unix.EINTR || err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+			continue
+		}
+		if err != nil {
+			return written, err
+		}
+		if count == 0 {
+			continue
+		}
+		written += count
+	}
+	return written, nil
 }
 
 func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
@@ -92,12 +150,66 @@ func (d *PTYDriver) Read(h *Handle, p []byte) (int, error) {
 
 	// readMu is separate from writeMu, so a read and a write stay full-duplex.
 	h.stateMu.RLock()
-	f := h.master
+	fd := h.masterFD
 	h.stateMu.RUnlock()
-	if f == nil {
+	if fd < 0 {
 		return 0, fmt.Errorf("%w: process %d is not on a terminal", ErrClosed, h.PID)
 	}
-	return readUntilDone(h, f, p)
+	return readPTYUntilDone(h, fd, p)
+}
+
+func readPTYUntilDone(h *Handle, fd int, p []byte) (int, error) {
+	return readPTYTimeout(h, fd, p, -1)
+}
+
+func readPTYTimeout(h *Handle, fd int, p []byte, timeout time.Duration) (int, error) {
+	deadline := time.Time{}
+	if timeout >= 0 {
+		deadline = time.Now().Add(timeout)
+	}
+	for {
+		select {
+		case <-h.closing:
+			return 0, fmt.Errorf("%w: process %d output closed", ErrClosed, h.PID)
+		default:
+		}
+		pollMS := 50
+		if timeout >= 0 {
+			remaining := time.Until(deadline)
+			if remaining <= 0 && timeout > 0 {
+				return 0, nil
+			}
+			if timeout == 0 {
+				pollMS = 0
+			} else {
+				pollMS = min(50, pollTimeoutMillis(remaining))
+			}
+		}
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
+		n, err := unix.Poll(fds, pollMS)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			if timeout == 0 || (timeout > 0 && !time.Now().Before(deadline)) {
+				return 0, nil
+			}
+			continue
+		}
+		if fds[0].Revents&unix.POLLNVAL != 0 {
+			return 0, fmt.Errorf("%w: process %d output fd is invalid", ErrClosed, h.PID)
+		}
+		if fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+			n, err := unix.Read(fd, p)
+			if err == unix.EINTR || err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+				continue
+			}
+			return n, err
+		}
+	}
 }
 
 // Resize publishes a new window size to the process (SIGWINCH). Held under
@@ -111,14 +223,11 @@ func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
 	h.stateMu.RLock()
 	defer h.stateMu.RUnlock()
 
-	if h.master == nil {
+	if h.master == nil || h.masterFD < 0 {
 		return fmt.Errorf("%w: process %d has no PTY", ErrClosed, h.PID)
 	}
 
-	return pty.Setsize(h.master, &pty.Winsize{
-		Rows: rows,
-		Cols: cols,
-	})
+	return unix.IoctlSetWinsize(h.masterFD, unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
 }
 
 // ForegroundProcessGroup reports the PTY's current foreground process group.
@@ -126,10 +235,10 @@ func (d *PTYDriver) Resize(h *Handle, rows, cols uint16) error {
 func (d *PTYDriver) ForegroundProcessGroup(h *Handle) (int, error) {
 	h.stateMu.RLock()
 	defer h.stateMu.RUnlock()
-	if h.master == nil {
+	if h.master == nil || h.masterFD < 0 {
 		return 0, fmt.Errorf("%w: process %d has no PTY", ErrClosed, h.PID)
 	}
-	pgid, err := unix.IoctlGetInt(int(h.master.Fd()), unix.TIOCGPGRP)
+	pgid, err := unix.IoctlGetInt(h.masterFD, unix.TIOCGPGRP)
 	if err != nil {
 		return 0, fmt.Errorf("read PTY foreground process group: %w", err)
 	}

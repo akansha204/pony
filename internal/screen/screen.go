@@ -3,6 +3,7 @@
 package screen
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,16 +30,19 @@ type buffer struct {
 // Snapshot is a point-in-time copy of the visible screen and its bounded
 // scrollback. Reliable is false if the observer queue dropped terminal bytes.
 type Snapshot struct {
-	Rows           int
-	Columns        int
-	CursorRow      int
-	CursorColumn   int
-	Visible        []string
-	Scrollback     []string
-	Text           string
-	DroppedBytes   uint64
-	Reliable       bool
-	BracketedPaste bool
+	Rows            int
+	Columns         int
+	CursorRow       int
+	CursorColumn    int
+	Visible         []string
+	Scrollback      []string
+	Text            string
+	DroppedBytes    uint64
+	Reliable        bool
+	BracketedPaste  bool
+	AlternateScreen bool
+	MouseModes      []int
+	FocusReporting  bool
 }
 
 // Model parses a useful subset of terminal control sequences into a bounded grid.
@@ -51,6 +55,8 @@ type Model struct {
 	alt            buffer
 	useAlt         bool
 	bracketedPaste bool
+	mouseModes     map[int]bool
+	focusReporting bool
 	state          byte
 	sequence       []byte
 	oscEsc         bool
@@ -81,6 +87,7 @@ func New(rows, columns, scrollback int) *Model {
 	return &Model{
 		rows: rows, cols: columns, maxScrollback: scrollback,
 		main: newBuffer(rows, columns), alt: newBuffer(rows, columns),
+		mouseModes: make(map[int]bool),
 	}
 }
 
@@ -140,6 +147,14 @@ func (m *Model) Feed(data []byte) {
 			m.oscEsc = c == 0x1b
 			continue
 		}
+		if m.state == 'd' { // DCS, SOS, PM, APC: discard through ST only.
+			i++
+			if m.oscEsc && c == '\\' {
+				m.state = 0
+			}
+			m.oscEsc = c == 0x1b
+			continue
+		}
 		if m.state == 'e' {
 			i++
 			m.state = 0
@@ -148,6 +163,8 @@ func (m *Model) Feed(data []byte) {
 				m.state = 'c'
 			case ']':
 				m.state = 'o'
+			case 'P', 'X', '^', '_':
+				m.state = 'd'
 			case '7':
 				b := m.active()
 				b.savedRow, b.savedCol = b.row, b.col
@@ -258,11 +275,33 @@ func (m *Model) Snapshot() Snapshot {
 		visible[i] = strings.TrimRight(string(line), " ")
 	}
 	back := append([]string(nil), b.lines...)
+	mouseModes := make([]int, 0, len(m.mouseModes))
+	for mode, enabled := range m.mouseModes {
+		if enabled {
+			mouseModes = append(mouseModes, mode)
+		}
+	}
+	sort.Ints(mouseModes)
 	return Snapshot{
 		Rows: m.rows, Columns: m.cols, CursorRow: b.row, CursorColumn: b.col,
 		Visible: visible, Scrollback: back, Text: strings.Join(visible, "\n"),
 		DroppedBytes: dropped, Reliable: dropped == 0, BracketedPaste: m.bracketedPaste,
+		AlternateScreen: m.useAlt, MouseModes: mouseModes, FocusReporting: m.focusReporting,
 	}
+}
+
+// InputModes reports whether the agent currently requests mouse tracking and
+// focus reporting. It avoids copying the screen grid for input routing.
+func (m *Model) InputModes() (mouse, focus bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, mode := range []int{9, 1000, 1002, 1003} {
+		if m.mouseModes[mode] {
+			mouse = true
+			break
+		}
+	}
+	return mouse, m.focusReporting
 }
 
 func (m *Model) putRune(r rune) {
@@ -351,8 +390,12 @@ func (m *Model) handleCSI(final byte, raw []byte) {
 	case 's':
 		b.savedRow, b.savedCol = b.row, b.col
 	case 'u':
-		b.row, b.col = b.savedRow, b.savedCol
-		b.wrapPending = false
+		// Only the parameterless cursor-restore sequence is DECRC's CSI form.
+		// Kitty keyboard controls also end in 'u' and must not move the cursor.
+		if !private && len(raw) == 0 {
+			b.row, b.col = b.savedRow, b.savedCol
+			b.wrapPending = false
+		}
 	case 'S':
 		for i := 0; i < value(0, 1); i++ {
 			m.scrollUp(b)
@@ -366,6 +409,12 @@ func (m *Model) handleCSI(final byte, raw []byte) {
 			for _, mode := range params {
 				if mode == 2004 {
 					m.bracketedPaste = final == 'h'
+				}
+				if mode == 9 || mode == 1000 || mode == 1002 || mode == 1003 || mode == 1005 || mode == 1006 || mode == 1015 || mode == 1016 {
+					m.mouseModes[mode] = final == 'h'
+				}
+				if mode == 1004 {
+					m.focusReporting = final == 'h'
 				}
 				if mode == 1049 || mode == 47 || mode == 1047 {
 					if final == 'h' {
@@ -480,6 +529,9 @@ func (m *Model) resetLocked() {
 	m.main = newBuffer(m.rows, m.cols)
 	m.alt = newBuffer(m.rows, m.cols)
 	m.useAlt = false
+	m.bracketedPaste = false
+	m.mouseModes = make(map[int]bool)
+	m.focusReporting = false
 	m.state = 0
 	m.sequence = nil
 	m.pending = nil

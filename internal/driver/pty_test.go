@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -77,6 +78,84 @@ func TestBlockingReadDoesNotBlockWrite(t *testing.T) {
 			}
 			<-got
 		})
+	}
+}
+
+func TestInterruptiblePTYWriteReleasesWaitAfterStop(t *testing.T) {
+	d := NewPTYDriver()
+	h, err := d.Start(context.Background(), Spec{Path: "sh", Args: []string{"-c", "stty raw -echo; printf READY; sleep 30"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitDone := make(chan ExitResult, 1)
+	go func() { waitDone <- d.Wait(h) }()
+	stopped, waited := false, false
+	t.Cleanup(func() {
+		if !stopped {
+			_ = d.Stop(context.Background(), h)
+		}
+		if !waited {
+			<-waitDone
+		}
+	})
+
+	ready := make(chan struct{})
+	go func() {
+		buf := make([]byte, 64)
+		var output strings.Builder
+		for {
+			n, err := d.Read(h, buf)
+			if n > 0 {
+				output.Write(buf[:n])
+				if strings.Contains(output.String(), "READY") {
+					close(ready)
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child did not enter raw terminal mode")
+	}
+
+	cancel := make(chan struct{})
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := d.WriteInterruptible(h, bytes.Repeat([]byte("x"), 1<<20), cancel)
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		t.Fatalf("large PTY write unexpectedly completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- d.Stop(context.Background(), h) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+		stopped = true
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop did not release the blocked PTY writer")
+	}
+	select {
+	case <-waitDone:
+		waited = true
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not finish after the blocked PTY writer released")
+	}
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("interruptible PTY writer did not exit after process teardown")
 	}
 }
 

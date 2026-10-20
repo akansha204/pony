@@ -164,6 +164,9 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 	if task.State != StatePending {
 		return Snapshot{}, fmt.Errorf("task %q is %s", id, task.State)
 	}
+	if task.WorkspaceID != "" {
+		return task, fmt.Errorf("task %q already has workspace %q", id, task.WorkspaceID)
+	}
 	if m.workspaces == nil || m.agents == nil {
 		return Snapshot{}, fmt.Errorf("task runtime is not configured")
 	}
@@ -174,6 +177,13 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 		BaseRef:    task.BaseRef,
 	})
 	if err != nil {
+		if ws.ID != "" {
+			task.WorkspaceID = ws.ID
+			task.WorkspacePath = ws.Path
+			task.State = StateFailed
+			m.tasks[id] = task
+			return task, fmt.Errorf("start task %q: %w", id, err)
+		}
 		return Snapshot{}, fmt.Errorf("start task %q: %w", id, err)
 	}
 
@@ -187,7 +197,13 @@ func (m *Manager) Start(id TaskID, launch LaunchSpec) (Snapshot, error) {
 	if err != nil {
 		rollbackErr := m.workspaces.RollbackUnusedAllocation(ws)
 		if rollbackErr != nil {
-			return Snapshot{}, errors.Join(
+			// Keep the allocation visible so the caller can inspect or clean
+			// it after a failed rollback.
+			task.WorkspaceID = ws.ID
+			task.WorkspacePath = ws.Path
+			task.State = StateFailed
+			m.tasks[id] = task
+			return task, errors.Join(
 				fmt.Errorf("start task %q: %w", id, err),
 				fmt.Errorf("roll back workspace %q: %w", ws.ID, rollbackErr),
 			)

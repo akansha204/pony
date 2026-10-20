@@ -42,6 +42,9 @@ func (m *Manager) Allocate(spec Spec) (Workspace, error) {
 		"worktree", "add", "--", workspace.Path, workspace.Branch,
 	); err != nil {
 		rollbackErr := m.rollbackAllocation(workspace, baseCommit, rootCreated)
+		if rollbackErr != nil {
+			return workspace, errors.Join(fmt.Errorf("allocate workspace %q: %w", workspace.ID, err), rollbackErr)
+		}
 		return Workspace{}, errors.Join(fmt.Errorf("allocate workspace %q: %w", workspace.ID, err), rollbackErr)
 	}
 
@@ -49,7 +52,13 @@ func (m *Manager) Allocate(spec Spec) (Workspace, error) {
 	if err != nil || !containsWorkspace(listed, workspace) {
 		rollbackErr := m.rollbackAllocation(workspace, baseCommit, rootCreated)
 		if err != nil {
+			if rollbackErr != nil {
+				return workspace, errors.Join(fmt.Errorf("verify workspace %q: %w", workspace.ID, err), rollbackErr)
+			}
 			return Workspace{}, errors.Join(fmt.Errorf("verify workspace %q: %w", workspace.ID, err), rollbackErr)
+		}
+		if rollbackErr != nil {
+			return workspace, errors.Join(fmt.Errorf("verify workspace %q: Git did not report the created worktree", workspace.ID), rollbackErr)
 		}
 		return Workspace{}, errors.Join(fmt.Errorf("verify workspace %q: Git did not report the created worktree", workspace.ID), rollbackErr)
 	}

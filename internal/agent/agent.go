@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sync"
 	"time"
 
 	"github.com/akansha204/pony/internal/driver"
@@ -76,12 +77,23 @@ type session struct {
 	stopReq           bool
 	out               *outputBuffer
 	screen            *screen.Model
-	screenFeed        chan []byte
+	protocol          *terminalProtocol
+	replyQueue        chan []byte
+	replyStop         chan struct{}
+	streamMu          sync.Mutex
+	screenFeed        chan screenEvent
+	screenFeedClosed  bool
+	screenDone        chan struct{}
 	foregroundPID     int
 	foregroundProcess string
 	agentKind         AgentKind
 	identityCheckedAt time.Time
 	stateCheckedAt    time.Time
+}
+
+type screenEvent struct {
+	data    []byte
+	barrier chan struct{}
 }
 
 type agent struct {

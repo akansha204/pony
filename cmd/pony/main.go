@@ -117,11 +117,19 @@ func main() {
 				fmt.Println("run:", err)
 				continue
 			}
-			fmt.Printf("task %s running in %s (attach %s)\n", snapshot.ID, snapshot.WorkspacePath, snapshot.ID)
+			fmt.Printf("task %s process started in %s; goal passed at launch (attach %s)\n", snapshot.ID, snapshot.WorkspacePath, snapshot.ID)
 
 		case "list":
+			sessions := make(map[agent.AgentID]agent.SessionSnapshot)
+			for _, session := range a.agents.Snapshots() {
+				sessions[session.AgentID] = session
+			}
 			for _, snapshot := range a.tasks.List() {
-				fmt.Printf("%-16s %-11s %s\n", snapshot.ID, snapshot.State, snapshot.WorkspacePath)
+				line := fmt.Sprintf("%-16s %-11s %s", snapshot.ID, snapshot.State, snapshot.WorkspacePath)
+				if session, ok := sessions[agent.AgentID(snapshot.ID)]; ok {
+					line += fmt.Sprintf(" runtime=%s agent_state=%s", session.State, session.AgentState)
+				}
+				fmt.Println(line)
 			}
 
 		case "validate":
@@ -295,7 +303,7 @@ func main() {
 				fmt.Printf("[screen may be incomplete: %d observer bytes were dropped]\n", snap.DroppedBytes)
 			}
 			for _, line := range snap.Visible {
-				fmt.Println(line)
+				fmt.Println(safeText(line))
 			}
 
 		case "resize":
@@ -364,6 +372,9 @@ func printCLIHelp() {
 Task commands:
   run --id ID --goal TEXT --command CMD [--repo PATH] [--arg ARG] [--validate COMMAND]
       Start a task in its own Git worktree. --repo defaults to the current Git repo.
+      codex, opencode, claude, and aider receive --goal as a native launch argument.
+      Other commands require one whole --arg '{goal}' at their goal argument position.
+      A running process does not prove the agent accepted or is working on the goal.
       Add --validate to run checks after a clean exit; without checks, task ends as completed.
   list                         List tasks and their states
   attach <id>                  Interact with a running task; Ctrl+\\ detaches
@@ -379,7 +390,7 @@ Agent session commands:
   prompt <id> --wait STATE TEXT  Submit and wait for idle, blocked, or done (2m timeout)
       send and prompt both press Enter; prompt --wait additionally waits for agent_state
       idle = ready; blocked = waiting for you; done = turn appears complete
-  read <id>                    Show buffered terminal output
+  read <id>                    Show modeled terminal screen and scrollback
   screen <id>                  Show the latest modeled terminal screen
   attach <id>                  Type directly into a running session; Ctrl+\\ detaches
   resize <id> <rows> <cols>    Set a session's terminal size
@@ -487,42 +498,25 @@ func (r *lineReader) readLineWithSignals(signals <-chan os.Signal) (string, erro
 }
 
 func readAgent(mgr *agent.Manager, id agent.AgentID) {
-	const chunkWait = 200 * time.Millisecond
-
-	buf := make([]byte, 4096)
-	var out strings.Builder
-	deadline := time.Now().Add(2 * time.Second)
-	var readErr error
-
-	for time.Now().Before(deadline) {
-		n, err := mgr.ReadTimeout(id, buf, chunkWait)
-		if n > 0 {
-			out.Write(buf[:n])
-		}
-
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				readErr = err
-			}
-			break
-		}
-
-		if n == 0 {
-			break
-		}
+	out, dropped, err := readAgentOutput(mgr, id)
+	if err != nil {
+		fmt.Println("read:", err)
+		return
 	}
-
-	if out.Len() > 0 {
-		fmt.Print(out.String())
-		if !strings.HasSuffix(out.String(), "\n") {
-			fmt.Println()
+	if out != "" {
+		fmt.Println(strings.Join(safeScreenLines(out), "\n"))
+		if dropped > 0 {
+			fmt.Fprintf(os.Stderr, "read: %d earlier screen bytes were dropped from scrollback\n", dropped)
 		}
+	} else {
+		fmt.Println("(no visible agent output yet)")
 	}
-	if dropped := mgr.OutputDroppedBytes(id); dropped > 0 {
-		fmt.Fprintf(os.Stderr, "read: %d earlier output bytes were dropped from the recent-output buffer\n", dropped)
-	}
+}
 
-	if readErr != nil {
-		fmt.Println("read:", readErr)
+func safeScreenLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = safeText(lines[i])
 	}
+	return lines
 }

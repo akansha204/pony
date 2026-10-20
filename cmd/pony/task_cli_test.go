@@ -22,21 +22,26 @@ import (
 	"github.com/akansha204/pony/internal/workspace"
 )
 
-type goalWriteFailDriver struct {
+type noGoalWriteDriver struct {
 	driver.Driver
-	writeErr error
-	stopErr  error
+	writes int
 }
 
-func (d *goalWriteFailDriver) Write(_ *driver.Handle, _ []byte) (int, error) {
-	return 0, d.writeErr
+type dirtyLaunchFailureDriver struct {
+	driver.Driver
+	err error
 }
 
-func (d *goalWriteFailDriver) Stop(ctx context.Context, h *driver.Handle) error {
-	if d.stopErr != nil {
-		return d.stopErr
+func (d *dirtyLaunchFailureDriver) Start(_ context.Context, spec driver.Spec) (*driver.Handle, error) {
+	if err := os.WriteFile(filepath.Join(spec.Cwd, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		return nil, err
 	}
-	return d.Driver.Stop(ctx, h)
+	return nil, d.err
+}
+
+func (d *noGoalWriteDriver) Write(_ *driver.Handle, _ []byte) (int, error) {
+	d.writes++
+	return 0, errors.New("unexpected PTY goal write")
 }
 
 func cliRepository(t *testing.T) string {
@@ -114,11 +119,160 @@ func TestParseRun(t *testing.T) {
 	}
 }
 
+func TestResolveGoalLaunch(t *testing.T) {
+	goal := "--start\nquote ' \" ; $(touch nope)"
+	for _, tc := range []struct {
+		name    string
+		command string
+		args    []string
+		want    []string
+		bad     bool
+	}{
+		{"opencode", "opencode", nil, []string{"--prompt=" + goal}, false},
+		{"codex", "codex", nil, []string{"--", goal}, false},
+		{"claude", "claude", nil, []string{"--", goal}, false},
+		{"aider", "aider", nil, []string{"--message=" + goal}, false},
+		{"custom", "/usr/bin/custom", []string{"--", "{goal}"}, []string{"--", goal}, false},
+		{"unknown", "custom", nil, nil, true},
+		{"embedded", "sh", []string{"-c", "echo {goal}"}, nil, true},
+		{"duplicate", "sh", []string{"{goal}", "{goal}"}, nil, true},
+		{"opencode subcommand", "opencode", []string{"run"}, nil, true},
+		{"opencode old positional goal", "opencode", []string{"old goal"}, nil, true},
+		{"opencode option value", "opencode", []string{"--model", "review"}, []string{"--model", "review", "--prompt=" + goal}, false},
+		{"opencode duplicate", "opencode", []string{"--prompt", "old"}, nil, true},
+		{"opencode option terminator", "opencode", []string{"--"}, nil, true},
+		{"codex subcommand", "codex", []string{"exec"}, nil, true},
+		{"codex old positional goal", "codex", []string{"old goal"}, nil, true},
+		{"codex option value", "codex", []string{"--model", "review"}, []string{"--model", "review", "--", goal}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launch, err := resolveGoalLaunch(runOptions{command: tc.command, args: tc.args, goal: goal})
+			if (err != nil) != tc.bad {
+				t.Fatalf("launch = %+v, error = %v", launch, err)
+			}
+			if !tc.bad && !equalStrings(launch.Args, tc.want) {
+				t.Fatalf("args = %#v, want %#v", launch.Args, tc.want)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestRunPassesGoalAfterDelayedStartupWithoutTerminalInput(t *testing.T) {
+	a, repo := cliApp(t)
+	goal := "--first line\nsecond ' \" ; $(touch unwanted)"
+	goalFile := filepath.Join(t.TempDir(), "goal")
+	started, err := a.run(runOptions{
+		id: "delayed", goal: goal, repo: repo, baseRef: "HEAD", command: "sh",
+		args: []string{"-c", `sleep 0.2; printf '%s' "$1" > "$2"`, "pony-goal", "{goal}", goalFile},
+	})
+	if err != nil || started.SessionID == "" {
+		t.Fatalf("run = %+v, %v", started, err)
+	}
+	waitCLIState(t, a, "delayed", task.StateCompleted)
+	raw, err := os.ReadFile(goalFile)
+	if err != nil || string(raw) != goal {
+		t.Fatalf("delivered goal = %q, error = %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(started.WorkspacePath, "unwanted")); !os.IsNotExist(err) {
+		t.Fatalf("goal text was executed: %v", err)
+	}
+}
+
+func TestRunInvalidTransportDoesNotAllocateAndFailedLaunchCanRetry(t *testing.T) {
+	a, repo := cliApp(t)
+	opts := runOptions{id: "retry", goal: "goal", repo: repo, baseRef: "HEAD", command: "unknown-tool"}
+	if _, err := a.run(opts); err == nil {
+		t.Fatal("unknown command accepted without goal argument")
+	}
+	if _, ok := a.tasks.Get(opts.id); ok {
+		t.Fatal("invalid transport created a task")
+	}
+	opts.args = []string{"{goal}"}
+	if _, err := a.run(opts); err == nil {
+		t.Fatal("missing executable launched")
+	}
+	if _, ok := a.tasks.Get(opts.id); ok {
+		t.Fatal("failed launch left a pending task")
+	}
+	opts.command = "sh"
+	opts.args = []string{"-c", `test "$1" = goal`, "pony-goal", "{goal}"}
+	if _, err := a.run(opts); err != nil {
+		t.Fatalf("same ID retry: %v", err)
+	}
+	waitCLIState(t, a, opts.id, task.StateCompleted)
+}
+
+func TestRunRetainsChangedWorkspaceWhenFailedLaunchCannotRollback(t *testing.T) {
+	repo := cliRepository(t)
+	workspaces, err := workspace.NewManager(filepath.Join(t.TempDir(), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("launch failed after worktree changed")
+	agents := agent.NewManager(&dirtyLaunchFailureDriver{Driver: driver.NewPTYDriver(), err: wantErr})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := &app{agents: agents, workspaces: workspaces, tasks: task.NewManager(workspaces, agents), ctx: ctx, cancel: cancel, runs: make(map[task.TaskID]*runState)}
+
+	got, err := a.run(runOptions{id: "keep", goal: "goal", repo: repo, baseRef: "HEAD", command: "sh", args: []string{"{goal}"}})
+	if !errors.Is(err, wantErr) || got.State != task.StateFailed || got.WorkspaceID == "" {
+		t.Fatalf("run = %+v, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(got.WorkspacePath, "keep.txt")); err != nil {
+		t.Fatalf("changed worktree was lost: %v", err)
+	}
+	if stored, ok := a.tasks.Get("keep"); !ok || stored.WorkspaceID != got.WorkspaceID {
+		t.Fatalf("failed task not tracked: %+v, found=%t", stored, ok)
+	}
+	if err := a.clean("keep"); err == nil {
+		t.Fatal("clean removed changed worktree")
+	}
+	if err := os.Remove(filepath.Join(got.WorkspacePath, "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.clean("keep"); err != nil {
+		t.Fatalf("clean recovered task: %v", err)
+	}
+}
+
+func TestRunRetainsHookChangedWorkspaceWhenAllocationCannotRollback(t *testing.T) {
+	a, repo := cliApp(t)
+	hook := filepath.Join(repo, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'keep me\\n' > hook-produced.txt\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.run(runOptions{id: "hook-data", goal: "goal", repo: repo, baseRef: "HEAD", command: "sh", args: []string{"{goal}"}})
+	if err == nil || got.State != task.StateFailed || got.WorkspaceID == "" {
+		t.Fatalf("run = %+v, %v", got, err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(got.WorkspacePath, "hook-produced.txt")); err != nil || string(raw) != "keep me\n" {
+		t.Fatalf("hook file = %q, error = %v", raw, err)
+	}
+	if stored, ok := a.tasks.Get("hook-data"); !ok || stored.WorkspaceID != got.WorkspaceID {
+		t.Fatalf("failed allocation not tracked: %+v, found=%t", stored, ok)
+	}
+	if err := a.clean("hook-data"); err == nil {
+		t.Fatal("clean removed hook data")
+	}
+}
+
 func TestRunCompletesAndValidatesInWorkspace(t *testing.T) {
 	a, repo := cliApp(t)
 	opts := runOptions{
 		id: "task", goal: "do the work", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; test \"$goal\" = 'do the work'"},
+		command: "sh", args: []string{"-c", "test \"$1\" = 'do the work'", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "sh", Args: []string{"-c", "test -f README.md && pwd"}, Timeout: time.Second}},
 	}
 	started, err := a.run(opts)
@@ -145,7 +299,7 @@ func TestRunValidationFailure(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; exit 0"},
+		command: "sh", args: []string{"-c", "test -n \"$1\"; exit 0", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "false", Timeout: time.Second}},
 	})
 	if err != nil {
@@ -158,7 +312,7 @@ func TestRunCrashSkipsValidation(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; exit 7"},
+		command: "sh", args: []string{"-c", "test -n \"$1\"; exit 7", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "true", Timeout: time.Second}},
 	})
 	if err != nil {
@@ -172,16 +326,14 @@ func TestRunCrashSkipsValidation(t *testing.T) {
 	}
 }
 
-func TestRunReportsGoalAndCleanupFailuresWithRecoverySteps(t *testing.T) {
+func TestRunAndRestartNeverWriteGoalToPTY(t *testing.T) {
 	repo := cliRepository(t)
 	workspaces, err := workspace.NewManager(filepath.Join(t.TempDir(), "workspaces"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeErr := errors.New("input pipe failed")
-	stopErr := errors.New("stop failed")
-	failingDriver := &goalWriteFailDriver{Driver: driver.NewPTYDriver(), writeErr: writeErr, stopErr: stopErr}
-	agents := agent.NewManager(failingDriver)
+	d := &noGoalWriteDriver{Driver: driver.NewPTYDriver()}
+	agents := agent.NewManager(d)
 	events := event.NewMemoryStore()
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &app{
@@ -189,38 +341,32 @@ func TestRunReportsGoalAndCleanupFailuresWithRecoverySteps(t *testing.T) {
 		events: events, ctx: ctx, cancel: cancel, runs: make(map[task.TaskID]*runState),
 	}
 	t.Cleanup(func() {
-		failingDriver.stopErr = nil
 		_ = a.shutdown()
-		_ = workspaces.Release(repo, "ws-goal-failure")
+		_ = workspaces.Release(repo, "ws-no-write")
 		cancel()
 	})
 
 	snapshot, err := a.run(runOptions{
-		id: "goal-failure", goal: "do the work", repo: repo, baseRef: "HEAD",
-		command: "sleep", args: []string{"1000"},
+		id: "no-write", goal: "do the work", repo: repo, baseRef: "HEAD",
+		command: "sh", args: []string{"-c", "sleep 1000", "pony-goal", "{goal}"},
 	})
-	if !errors.Is(err, writeErr) || !errors.Is(err, stopErr) {
-		t.Fatalf("run error = %v, want both goal-write and stop errors", err)
+	if err != nil || snapshot.SessionID == "" {
+		t.Fatalf("run = %+v, %v", snapshot, err)
 	}
-	for _, recovery := range []string{"list", "stop goal-failure", "clean goal-failure"} {
-		if !strings.Contains(err.Error(), recovery) {
-			t.Fatalf("run error %q does not explain recovery step %q", err, recovery)
-		}
+	if _, err := a.stop("no-write"); err != nil {
+		t.Fatal(err)
 	}
-	if snapshot.SessionID == "" || snapshot.WorkspacePath == "" {
-		t.Fatalf("run did not return the allocated task for recovery: %+v", snapshot)
+	if _, err := a.restart("no-write"); err != nil {
+		t.Fatal(err)
 	}
-	stored, ok := a.tasks.Get("goal-failure")
-	if !ok || stored.State != task.StateRunning {
-		t.Fatalf("task after failed stop = %+v, found = %t", stored, ok)
+	if d.writes != 0 {
+		t.Fatalf("goal written to PTY %d times", d.writes)
 	}
-
-	failingDriver.stopErr = nil
-	if _, err := a.stop("goal-failure"); err != nil {
-		t.Fatalf("recover with stop: %v", err)
+	if _, err := a.stop("no-write"); err != nil {
+		t.Fatal(err)
 	}
-	if err := a.clean("goal-failure"); err != nil {
-		t.Fatalf("recover with clean: %v", err)
+	if err := a.clean("no-write"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -228,7 +374,7 @@ func TestTaskAttachDetachKeepsSession(t *testing.T) {
 	a, repo := cliApp(t)
 	started, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; while IFS= read -r line; do eval \"$line\"; done"},
+		command: "sh", args: []string{"-c", "test \"$1\" = goal; while IFS= read -r line; do eval \"$line\"; done", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "true", Timeout: time.Second}},
 	})
 	if err != nil {
@@ -255,10 +401,10 @@ func TestRestartResendsTaskGoal(t *testing.T) {
 	a, repo := cliApp(t)
 	goalFile := filepath.Join(t.TempDir(), "received-goals.txt")
 	goal := "fix the widget"
-	command := fmt.Sprintf(`IFS= read -r goal; printf '%%s\n' "$goal" >> '%s'; sleep 1000`, goalFile)
+	command := fmt.Sprintf(`printf '%%s\n' "$1" >> '%s'; sleep 1000`, goalFile)
 	if _, err := a.run(runOptions{
 		id: "restart-goal", goal: goal, repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", command},
+		command: "sh", args: []string{"-c", command, "pony-goal", "{goal}"},
 	}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -295,7 +441,7 @@ func TestExplicitStopSkipsAutomaticValidation(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; sleep 1000"},
+		command: "sh", args: []string{"-c", "test -n \"$1\"; sleep 1000", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "true", Timeout: time.Second}},
 	})
 	if err != nil {
@@ -324,7 +470,7 @@ func TestCleanRefusesRunningAndDirtyTasks(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; sleep 1000"},
+		command: "sh", args: []string{"-c", "test -n \"$1\"; sleep 1000", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "true", Timeout: time.Second}},
 	})
 	if err != nil {
@@ -363,7 +509,7 @@ func TestRunRejectsAgentIDCollision(t *testing.T) {
 	if _, err := a.agents.Start(agent.AgentSpec{ID: "taken", Command: "sleep", Args: []string{"1000"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := a.run(runOptions{id: "taken", goal: "goal", repo: repo, baseRef: "HEAD", command: "sh", steps: []validation.Step{{Command: "true", Timeout: time.Second}}})
+	_, err := a.run(runOptions{id: "taken", goal: "goal", repo: repo, baseRef: "HEAD", command: "sh", args: []string{"{goal}"}, steps: []validation.Step{{Command: "true", Timeout: time.Second}}})
 	if err == nil {
 		t.Fatal("run accepted duplicate agent ID")
 	}
@@ -393,7 +539,7 @@ func TestCLICommandRunsTaskToVerification(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	line := "run --id task --goal goal --repo " + repo + " --command sh --arg -c --arg 'read -r goal; exit 0' --validate 'test -f README.md'\n"
+	line := "run --id task --goal goal --repo " + repo + " --command sh --arg -c --arg 'test -n \"$1\"; exit 0' --arg pony-goal --arg '{goal}' --validate 'test -f README.md'\n"
 	if _, err := stdin.Write([]byte(line)); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +553,7 @@ func TestCLICommandRunsTaskToVerification(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("Pony: %v\nstdout: %s\nstderr: %s", err, output.String(), errorsOut.String())
 	}
-	if !strings.Contains(output.String(), "task running in") || !strings.Contains(output.String(), "task             checks_passed") {
+	if !strings.Contains(output.String(), "task process started in") || !strings.Contains(output.String(), "task             checks_passed") {
 		t.Fatalf("CLI output does not show checks-passed task:\n%s", output.String())
 	}
 }
@@ -473,7 +619,7 @@ func TestStopWaitsForAutomaticValidation(t *testing.T) {
 	a, repo := cliApp(t)
 	_, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; exit 0"},
+		command: "sh", args: []string{"-c", "test -n \"$1\"; exit 0", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "sleep", Args: []string{"0.2"}, Timeout: time.Second}},
 	})
 	if err != nil {
@@ -490,7 +636,7 @@ func TestShutdownCancelsActiveValidation(t *testing.T) {
 	a, repo := cliApp(t)
 	started, err := a.run(runOptions{
 		id: "task", goal: "goal", repo: repo, baseRef: "HEAD",
-		command: "sh", args: []string{"-c", "read -r goal; exit 0"},
+		command: "sh", args: []string{"-c", "test -n \"$1\"; exit 0", "pony-goal", "{goal}"},
 		steps: []validation.Step{{Command: "sh", Args: []string{"-c", "sleep 1000 & echo $! > child.pid; wait"}, Timeout: time.Minute}},
 	})
 	if err != nil {
@@ -558,7 +704,7 @@ func TestCLIShutdownOnSIGTERMStopsAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	line := "run --id task --goal goal --repo " + repo + " --command sh --arg -c --arg 'read -r goal; echo $$ > agent.pid; sleep 1000' --validate true\n"
+	line := "run --id task --goal goal --repo " + repo + " --command sh --arg -c --arg 'test -n \"$1\"; echo $$ > agent.pid; sleep 1000' --arg pony-goal --arg '{goal}' --validate true\n"
 	if _, err := stdin.Write([]byte(line)); err != nil {
 		t.Fatal(err)
 	}

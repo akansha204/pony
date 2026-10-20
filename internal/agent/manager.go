@@ -135,7 +135,11 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 		AgentState: AgentStateUnknown,
 		agentKind:  AgentKindUnknown,
 		screen:     screen.New(24, 80, 256),
-		screenFeed: make(chan []byte, 64),
+		protocol:   newTerminalProtocol(24, 80),
+		replyQueue: make(chan []byte, 64),
+		replyStop:  make(chan struct{}),
+		screenFeed: make(chan screenEvent, 64),
+		screenDone: make(chan struct{}),
 	}
 
 	h, err := m.driver.Start(context.Background(), driver.Spec{
@@ -164,6 +168,7 @@ func (m *Manager) Start(spec AgentSpec) (SessionSnapshot, error) {
 	a.session = s
 
 	go m.pump(a, s, h)
+	go m.writeReplies(s, h)
 	go observeScreen(s)
 	go m.monitor(a, s)
 
@@ -442,8 +447,10 @@ func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
 	m.mu.Lock()
 	h := m.runningHandle(id)
 	var model *screen.Model
+	var protocol *terminalProtocol
 	if a := m.agents[id]; a != nil && a.session != nil {
 		model = a.session.screen
+		protocol = a.session.protocol
 	}
 	m.mu.Unlock()
 
@@ -456,6 +463,9 @@ func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
 	}
 	if model != nil {
 		model.Resize(int(rows), int(cols))
+	}
+	if protocol != nil {
+		protocol.Resize(int(rows), int(cols))
 	}
 
 	return nil
@@ -473,6 +483,55 @@ func (m *Manager) ScreenSnapshot(id AgentID) (screen.Snapshot, error) {
 	model := a.session.screen
 	m.mu.Unlock()
 	return model.Snapshot(), nil
+}
+
+// InputModes returns the current input modes requested by a running session.
+// It uses the synchronous terminal protocol model so attach input routing does
+// not wait for the asynchronous screen observer or copy its rendered grid.
+func (m *Manager) InputModes(id AgentID) (mouse, focus bool, err error) {
+	m.mu.Lock()
+	a := m.agents[id]
+	if a == nil || a.session == nil || a.session.protocol == nil {
+		m.mu.Unlock()
+		return false, false, fmt.Errorf("agent %q has no terminal protocol state", id)
+	}
+	protocol := a.session.protocol
+	m.mu.Unlock()
+	mouse, focus = protocol.InputModes()
+	return mouse, focus, nil
+}
+
+// PrepareAttach clears any partial output backlog and returns a screen snapshot
+// synchronized with the PTY reader. Attach can draw this frame before
+// streaming new terminal bytes, so it does not begin in the middle of an ANSI
+// update that was truncated from the bounded output buffer.
+func (m *Manager) PrepareAttach(id AgentID) (screen.Snapshot, error) {
+	m.mu.Lock()
+	a := m.agents[id]
+	if a == nil || a.session == nil || a.session.screen == nil || a.session.out == nil {
+		m.mu.Unlock()
+		return screen.Snapshot{}, fmt.Errorf("agent %q has no screen snapshot", id)
+	}
+	s := a.session
+	m.mu.Unlock()
+
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	s.out.discardPending()
+	if !s.screenFeedClosed {
+		barrier := make(chan struct{})
+		s.screenFeed <- screenEvent{barrier: barrier}
+		<-barrier
+	} else {
+		<-s.screenDone
+	}
+	snapshot := s.screen.Snapshot()
+	protocol := s.protocol.model.Snapshot()
+	snapshot.BracketedPaste = protocol.BracketedPaste
+	snapshot.AlternateScreen = protocol.AlternateScreen
+	snapshot.MouseModes = protocol.MouseModes
+	snapshot.FocusReporting = protocol.FocusReporting
+	return snapshot, nil
 }
 
 func (m *Manager) Snapshots() []SessionSnapshot {
@@ -585,29 +644,85 @@ func snapshotOf(a *agent) SessionSnapshot {
 
 func (m *Manager) pump(a *agent, s *session, h *driver.Handle) {
 	defer s.out.close()
-	defer close(s.screenFeed)
+	defer close(s.replyStop)
+	defer func() {
+		s.streamMu.Lock()
+		if !s.screenFeedClosed {
+			s.screenFeedClosed = true
+			close(s.screenFeed)
+		}
+		s.streamMu.Unlock()
+	}()
 
 	buf := make([]byte, 4096)
 	for {
 		n, err := m.driver.Read(h, buf)
 		if n > 0 {
-			s.out.write(buf[:n])
-			chunk := append([]byte(nil), buf[:n]...)
-			select {
-			case s.screenFeed <- chunk:
-			default:
-				s.screen.MarkDropped(uint64(len(chunk)))
+			s.streamMu.Lock()
+			chunk, replies := s.protocol.Process(buf[:n])
+			for _, reply := range replies {
+				select {
+				case s.replyQueue <- reply:
+				default:
+					// A query flood must not stall PTY output or session shutdown.
+				}
 			}
+			if len(chunk) > 0 {
+				s.out.write(chunk)
+			}
+			if len(chunk) > 0 && !s.screenFeedClosed {
+				select {
+				case s.screenFeed <- screenEvent{data: append([]byte(nil), chunk...)}:
+				default:
+					s.screen.MarkDropped(uint64(len(chunk)))
+				}
+			}
+			s.streamMu.Unlock()
 		}
 		if err != nil {
+			s.streamMu.Lock()
+			pending := s.protocol.Flush()
+			if len(pending) > 0 {
+				s.out.write(pending)
+				if !s.screenFeedClosed {
+					select {
+					case s.screenFeed <- screenEvent{data: pending}:
+					default:
+						s.screen.MarkDropped(uint64(len(pending)))
+					}
+				}
+			}
+			s.streamMu.Unlock()
 			return
 		}
 	}
 }
 
+func (m *Manager) writeReplies(s *session, h *driver.Handle) {
+	for {
+		select {
+		case <-s.replyStop:
+			return
+		case reply := <-s.replyQueue:
+			// This is the only goroutine that writes protocol replies. A blocked
+			// terminal write cannot hold the PTY reader or manager locks.
+			if writer, ok := m.driver.(driver.InterruptibleWriter); ok {
+				_, _ = writer.WriteInterruptible(h, reply, s.replyStop)
+			} else {
+				_, _ = m.driver.Write(h, reply)
+			}
+		}
+	}
+}
+
 func observeScreen(s *session) {
-	for chunk := range s.screenFeed {
-		s.screen.Feed(chunk)
+	defer close(s.screenDone)
+	for event := range s.screenFeed {
+		if event.barrier != nil {
+			close(event.barrier)
+			continue
+		}
+		s.screen.Feed(event.data)
 	}
 }
 

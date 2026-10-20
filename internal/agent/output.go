@@ -55,6 +55,15 @@ func (o *outputBuffer) droppedBytes() uint64 {
 	return o.dropped
 }
 
+// discardPending clears buffered bytes when a consumer is being initialized
+// from a current screen snapshot instead of replaying partial terminal output.
+func (o *outputBuffer) discardPending() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.buf = o.buf[:0]
+	o.signalLocked()
+}
+
 func (o *outputBuffer) close() {
 	o.mu.Lock()
 	defer o.mu.Unlock()

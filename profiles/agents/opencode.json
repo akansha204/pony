@@ -2,7 +2,7 @@
   "kind": "opencode",
   "rules": [
     { "state": "blocked", "contains": ["allow once", "allow always", "permission required", "approve this"] },
-    { "state": "working", "contains": ["esc to interrupt", "thinking", "working"] },
+    { "state": "working", "contains": ["esc to interrupt", "esc interrupt", "thinking", "working"] },
     { "state": "idle", "regex": ["^\\s*[›❯>]\\s*$"] }
   ]
 }
