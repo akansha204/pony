@@ -23,7 +23,7 @@ const (
 	drainGrace        = 250 * time.Millisecond
 )
 
-const resetAttachedTerminalModes = "\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[=0u\x1b[>4;0m\x1b[?25h\x1b[?47l\x1b[?1047l\x1b[?1049l"
+const resetAttachedTerminalModes = "\x1b[0m\x1b[r\x1b[?6l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[=0u\x1b[>4;0m\x1b[?25h\x1b[?47l\x1b[?1047l\x1b[?1049l"
 
 type attachSignalError struct{ signal os.Signal }
 
@@ -48,24 +48,31 @@ func attachWithIO(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-
 	})
 }
 
-func withRawTerminal(in *os.File, run func() error) error {
+func withRawTerminal(in *os.File, run func() error) (returnErr error) {
 	prior, err := terminal.MakeRaw(in.Fd())
 	if err != nil {
 		return err
 	}
-	defer func() { _ = terminal.Restore(in.Fd(), prior) }()
+	defer func() { returnErr = errors.Join(returnErr, terminal.Restore(in.Fd(), prior)) }()
 	return run()
 }
 
-func bridgeTerminal(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-chan os.Signal) error {
-	resizeTo(in, mgr, id)
+func bridgeTerminal(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig <-chan os.Signal) (returnErr error) {
+	if err := resizeTo(in, mgr, id); err != nil {
+		return err
+	}
 	snapshot, err := mgr.PrepareAttach(id)
 	if err != nil {
 		return err
 	}
 	term := newTermOut(out)
 	// Restore the outer CLI terminal even if any later setup write fails.
-	defer func() { _ = term.write([]byte(resetAttachedTerminalModes)) }()
+	defer func() {
+		// Move below the agent's visible screen, then scroll it clear so the
+		// CLI prompt cannot overwrite stale agent output. CSI S scrolls the
+		// current region by one screen and works with normal terminal sizes.
+		returnErr = errors.Join(returnErr, term.write([]byte(resetAttachedTerminalModes+"\x1b[S\x1b[H\x1b[2J\x1b[H")))
+	}()
 	if err := term.write([]byte(resetAttachedTerminalModes)); err != nil {
 		return err
 	}
@@ -80,20 +87,44 @@ func bridgeTerminal(mgr *agent.Manager, id agent.AgentID, in, out *os.File, sig 
 	if err := renderAttachSnapshot(term, snapshot); err != nil {
 		return err
 	}
+	if _, focus, err := mgr.InputModes(id); err != nil {
+		return err
+	} else if focus {
+		if _, err := mgr.Write(id, []byte("\x1b[I")); err != nil {
+			return err
+		}
+	}
 	done := make(chan struct{})
-	copied := make(chan struct{})
-	fatal := make(chan os.Signal, 1)
+	copied := make(chan error, 1)
+	fatal := make(chan error, 2)
 
 	go watchSignals(in, mgr, id, done, fatal, sig)
 	go func() {
-		defer close(copied)
-		copyOutput(mgr, id, term, done)
+		copyErr := copyOutput(mgr, id, term, done)
+		if copyErr != nil {
+			select {
+			case fatal <- copyErr:
+			case <-done:
+			}
+		}
+		copied <- copyErr
 	}()
 
 	err = readUntilDetach(mgr, id, in, fatal)
+	if running(mgr, id) == agent.StateRunning {
+		if _, focus, modeErr := mgr.InputModes(id); modeErr == nil && focus {
+			_, writeErr := mgr.Write(id, []byte("\x1b[O"))
+			err = errors.Join(err, writeErr)
+		} else if modeErr != nil {
+			err = errors.Join(err, modeErr)
+		}
+	}
 	close(done)
-	<-copied
-	return err
+	copyErr := <-copied
+	if copyErr != nil && errors.Is(err, copyErr) {
+		return err
+	}
+	return errors.Join(err, copyErr)
 }
 
 func restoreAttachModes(out *termOut, snapshot screen.Snapshot) error {
@@ -119,13 +150,33 @@ func renderAttachSnapshot(out *termOut, snapshot screen.Snapshot) error {
 		return err
 	}
 	for row, line := range snapshot.Visible {
-		sequence := fmt.Sprintf("\x1b[%d;1H\x1b[2K%s", row+1, line)
+		if row < len(snapshot.StyledVisible) {
+			line = snapshot.StyledVisible[row]
+		}
+		sequence := fmt.Sprintf("\x1b[0m\x1b[%d;1H\x1b[2K%s", row+1, line)
 		if err := out.write([]byte(sequence)); err != nil {
 			return err
 		}
 	}
+	if snapshot.ScrollTop > 0 || (snapshot.Rows > 0 && snapshot.ScrollBottom != snapshot.Rows-1) {
+		if err := out.write([]byte(fmt.Sprintf("\x1b[%d;%dr", snapshot.ScrollTop+1, snapshot.ScrollBottom+1))); err != nil {
+			return err
+		}
+	}
+	if snapshot.OriginMode {
+		if err := out.write([]byte("\x1b[?6h")); err != nil {
+			return err
+		}
+	}
 	if snapshot.Rows > 0 && snapshot.Columns > 0 {
-		sequence := fmt.Sprintf("\x1b[%d;%dH", snapshot.CursorRow+1, snapshot.CursorColumn+1)
+		row := snapshot.CursorRow + 1
+		if snapshot.OriginMode {
+			row -= snapshot.ScrollTop
+		}
+		sequence := fmt.Sprintf("\x1b[%d;%dH\x1b[0m%s", row, snapshot.CursorColumn+1, snapshot.CurrentStyle)
+		if !snapshot.CursorVisible {
+			sequence += "\x1b[?25l"
+		}
 		return out.write([]byte(sequence))
 	}
 	return out.write([]byte("\x1b[H"))
@@ -148,31 +199,42 @@ func (t *termOut) write(p []byte) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if _, err := t.f.Write(p); err != nil {
+	n, err := t.f.Write(p)
+	if err != nil {
 		return err
+	}
+	if n != len(p) {
+		return io.ErrShortWrite
 	}
 	return nil
 }
 
-func resizeTo(in *os.File, mgr *agent.Manager, id agent.AgentID) {
+func resizeTo(in *os.File, mgr *agent.Manager, id agent.AgentID) error {
 	rows, cols, err := terminal.Size(in.Fd())
-	if err == nil {
-		_ = mgr.Resize(id, rows, cols)
+	if err != nil {
+		return fmt.Errorf("read local terminal size: %w", err)
 	}
+	return mgr.Resize(id, rows, cols)
 }
 
-func watchSignals(in *os.File, mgr *agent.Manager, id agent.AgentID, done <-chan struct{}, fatal chan<- os.Signal, sig <-chan os.Signal) {
+func watchSignals(in *os.File, mgr *agent.Manager, id agent.AgentID, done <-chan struct{}, fatal chan<- error, sig <-chan os.Signal) {
 	for {
 		select {
 		case <-done:
 			return
 		case s := <-sig:
 			if s == syscall.SIGWINCH {
-				resizeTo(in, mgr, id)
+				if err := resizeTo(in, mgr, id); err != nil {
+					select {
+					case fatal <- err:
+					case <-done:
+					}
+					return
+				}
 				continue
 			}
 			select {
-			case fatal <- s:
+			case fatal <- &attachSignalError{signal: s}:
 			case <-done:
 			}
 			return
@@ -180,7 +242,7 @@ func watchSignals(in *os.File, mgr *agent.Manager, id agent.AgentID, done <-chan
 	}
 }
 
-func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-chan os.Signal) error {
+func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-chan error) error {
 	flags, err := unix.FcntlInt(in.Fd(), unix.F_GETFL, 0)
 	if err != nil {
 		return err
@@ -197,8 +259,8 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 	allowMouse, allowFocus := false, false
 	for {
 		select {
-		case sig := <-fatal:
-			return &attachSignalError{signal: sig}
+		case err := <-fatal:
+			return err
 		default:
 		}
 
@@ -218,7 +280,7 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 			if !pendingSince.IsZero() && time.Since(pendingSince) >= inputFilter.flushAfter() {
 				if pending := inputFilter.flush(); len(pending) > 0 {
 					if _, err := mgr.Write(id, pending); err != nil {
-						return nil
+						return err
 					}
 				}
 				pendingSince = time.Time{}
@@ -231,9 +293,9 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 		case errors.Is(err, unix.EAGAIN):
 			continue
 		case err != nil:
-			return nil
+			return err
 		case n == 0:
-			continue
+			return io.EOF
 		}
 
 		if buf[0] == detachKey {
@@ -251,7 +313,7 @@ func readUntilDetach(mgr *agent.Manager, id agent.AgentID, in *os.File, fatal <-
 		}
 		if len(forward) > 0 {
 			if _, err := mgr.Write(id, forward); err != nil {
-				return nil
+				return err
 			}
 		}
 	}
@@ -265,44 +327,47 @@ func running(mgr *agent.Manager, id agent.AgentID) agent.RuntimeState {
 	return snap.State
 }
 
-func copyOutput(mgr *agent.Manager, id agent.AgentID, out *termOut, done <-chan struct{}) {
+func copyOutput(mgr *agent.Manager, id agent.AgentID, out *termOut, done <-chan struct{}) error {
 	buf := make([]byte, 4096)
 	for {
 		select {
 		case <-done:
-			drainOutput(mgr, id, out, buf, drainGrace)
-			return
+			return drainOutput(mgr, id, out, buf, drainGrace)
 		default:
 		}
 
 		n, err := mgr.ReadTimeout(id, buf, attachPollTimeout)
 		if n > 0 {
-			if out.write(buf[:n]) != nil {
-				return
+			if writeErr := out.write(buf[:n]); writeErr != nil {
+				return writeErr
 			}
 			continue
 		}
 		if errors.Is(err, io.EOF) {
-			return
+			return nil
 		}
 		if err != nil {
-			return
+			return err
 		}
 	}
 }
 
-func drainOutput(mgr *agent.Manager, id agent.AgentID, out *termOut, buf []byte, grace time.Duration) {
+func drainOutput(mgr *agent.Manager, id agent.AgentID, out *termOut, buf []byte, grace time.Duration) error {
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
 		n, err := mgr.ReadTimeout(id, buf, 50*time.Millisecond)
 		if n > 0 {
-			if out.write(buf[:n]) != nil {
-				return
+			if writeErr := out.write(buf[:n]); writeErr != nil {
+				return writeErr
 			}
 			continue
 		}
 		if err != nil {
-			return
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
 	}
+	return nil
 }

@@ -443,19 +443,35 @@ func (m *Manager) Resize(id AgentID, rows, cols uint16) error {
 	if rows == 0 || cols == 0 {
 		return fmt.Errorf("resize agent %q: rows and cols must be > 0", id)
 	}
+	if rows > screen.MaxDimension || cols > screen.MaxDimension {
+		return fmt.Errorf("resize agent %q: terminal dimensions exceed %d cells per side", id, screen.MaxDimension)
+	}
 
 	m.mu.Lock()
 	h := m.runningHandle(id)
 	var model *screen.Model
 	var protocol *terminalProtocol
+	var s *session
 	if a := m.agents[id]; a != nil && a.session != nil {
-		model = a.session.screen
-		protocol = a.session.protocol
+		s = a.session
+		model = s.screen
+		protocol = s.protocol
 	}
 	m.mu.Unlock()
 
 	if h == nil {
 		return fmt.Errorf("agent %q has no running session", id)
+	}
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	// Apply queued old-size output before changing either model. The pump
+	// cannot add output while this barrier and the resize are in progress.
+	if !s.screenFeedClosed {
+		barrier := make(chan struct{})
+		s.screenFeed <- screenEvent{barrier: barrier}
+		<-barrier
+	} else {
+		<-s.screenDone
 	}
 
 	if err := m.driver.Resize(h, rows, cols); err != nil {

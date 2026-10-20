@@ -26,6 +26,13 @@ type attachPTY struct {
 	seen   []byte
 }
 
+type resizeFailureDriver struct {
+	driver.Driver
+	want error
+}
+
+func (d *resizeFailureDriver) Resize(*driver.Handle, uint16, uint16) error { return d.want }
+
 func openAttachPTY(t *testing.T, rows, cols uint16) *attachPTY {
 	t.Helper()
 
@@ -154,6 +161,17 @@ func TestAttachPTYResizeBeforeInputAndCleanDetachRestore(t *testing.T) {
 	original := termios(t, p.slave)
 
 	p.start(t, m, "size")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		frame, err := m.ScreenSnapshot("size")
+		if err == nil && frame.Rows == 41 && frame.Columns == 113 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("screen model still has stale size: %+v, %v", frame, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if got := termios(t, p.slave); got.Lflag&unix.ICANON != 0 || got.Lflag&unix.ECHO != 0 || got.Lflag&unix.ISIG != 0 {
 		t.Fatalf("local terminal is not raw during attach: %+v", got)
 	}
@@ -168,6 +186,127 @@ func TestAttachPTYResizeBeforeInputAndCleanDetachRestore(t *testing.T) {
 	if !ok || final.State != agent.StateRunning || final.Generation != start.Generation || final.PID != start.PID {
 		t.Fatalf("session changed on detach: start=%+v final=%+v exists=%v", start, final, ok)
 	}
+}
+
+func TestAttachResizeSignalKeepsPTYAndScreenDimensionsTogether(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 27, 91)
+	startShell(t, m, "resized", "stty raw -echo; dd bs=1 count=1 2>/dev/null >/dev/null; stty size; sleep 30")
+	p.start(t, m, "resized")
+	if err := pty.Setsize(p.master, &pty.Winsize{Rows: 43, Cols: 117}); err != nil {
+		t.Fatal(err)
+	}
+	p.sig <- syscall.SIGWINCH
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		frame, err := m.ScreenSnapshot("resized")
+		if err == nil && frame.Rows == 43 && frame.Columns == 117 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("screen size after resize = %+v, %v", frame, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	p.write(t, []byte("x"))
+	p.waitFor(t, "43 117", 3*time.Second)
+	p.detach(t)
+}
+
+func TestAttachMainScreenDetachRestoresCursorAndStyle(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 24, 80)
+	startShell(t, m, "main", "printf '\\033[31m\\033[3;8r\\033[?6h\\033[?25lMAIN_SCREEN'; sleep 30")
+	p.start(t, m, "main")
+	p.waitFor(t, "MAIN_SCREEN", 3*time.Second)
+	p.detach(t)
+	cleanup := resetAttachedTerminalModes + "\x1b[S\x1b[H\x1b[2J\x1b[H"
+	output := p.waitFor(t, cleanup, 3*time.Second)
+	if !strings.Contains(output, "\x1b[0m\x1b[r\x1b[?6l") || !strings.Contains(output, "\x1b[?25h") || !strings.HasSuffix(output, cleanup) {
+		t.Fatalf("detach did not restore a clean CLI line: %q", output)
+	}
+}
+
+func TestAttachResizeFailureRestoresTerminalAndReportsError(t *testing.T) {
+	want := errors.New("PTY resize failed")
+	m := agent.NewManager(&resizeFailureDriver{Driver: driver.NewPTYDriver(), want: want})
+	p := openAttachPTY(t, 24, 80)
+	startShell(t, m, "resize-fails", "sleep 30")
+	original := termios(t, p.slave)
+	err := attachWithIO(m, "resize-fails", p.slave, p.slave, p.sig)
+	if !errors.Is(err, want) {
+		t.Fatalf("attach error = %v, want resize failure", err)
+	}
+	if got := termios(t, p.slave); !reflect.DeepEqual(got, original) {
+		t.Fatal("terminal flags remained raw after resize failure")
+	}
+}
+
+func TestAttachOutputFailureRestoresTerminalAndReportsError(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 24, 80)
+	startShell(t, m, "output-fails", "sleep 30")
+	original := termios(t, p.slave)
+	out, err := os.CreateTemp(t.TempDir(), "closed-output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = attachWithIO(m, "output-fails", p.slave, out, p.sig)
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("attach error = %v, want closed output", err)
+	}
+	if got := termios(t, p.slave); !reflect.DeepEqual(got, original) {
+		t.Fatal("terminal flags remained raw after output failure")
+	}
+}
+
+func TestAttachFocusAndTypingReachAgent(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 24, 80)
+	startShell(t, m, "focus", "stty raw -echo; printf '\\033[?1004h\\033[?1000h\\033[?1006hFOCUS_READY'; dd bs=1 count=4 2>/dev/null | od -An -tx1; dd bs=1 count=3 2>/dev/null | od -An -tx1; sleep 30")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		frame, err := m.ScreenSnapshot("focus")
+		if err == nil && frame.FocusReporting && strings.Contains(frame.Text, "FOCUS_READY") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("focus reporting was not observed before attach")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	p.start(t, m, "focus")
+	p.write(t, []byte("x"))
+	p.waitFor(t, "1b 5b 49 78", 3*time.Second)
+	p.detach(t)
+	p.waitFor(t, "1b 5b 4f", 3*time.Second)
+}
+
+func TestAttachReplaysStyledAlternateScreen(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 25, 83)
+	startShell(t, m, "styled", "printf '\\033[?1049h\\033[2J\\033[31mRED\\033[0m \\033[1;34mBLUE\\033[0m\\033[?25l'; sleep 30")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		frame, err := m.ScreenSnapshot("styled")
+		if err == nil && strings.Contains(frame.Text, "RED BLUE") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("styled frame was not observed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	p.start(t, m, "styled")
+	p.waitFor(t, "BLUE", 3*time.Second)
+	output := p.waitFor(t, "\x1b[?25l", 3*time.Second)
+	if !strings.Contains(output, "\x1b[31mRED") || !strings.Contains(output, "\x1b[1;34mBLUE") || !strings.Contains(output, "\x1b[?25l") {
+		t.Fatalf("styled alternate frame was not replayed: %q", output)
+	}
+	p.detach(t)
 }
 
 func TestAttachPTYFatalSignalRestoresTerminal(t *testing.T) {
@@ -387,6 +526,17 @@ func TestAttachMouseSessionDoesNotLeakReportsIntoFollowingKeyboardSession(t *tes
 	if strings.Contains(string(p.seen), "1b 5b 3c 33 35") {
 		t.Fatal("unsolicited mouse report reached the keyboard-only session")
 	}
+	p.detach(t)
+}
+
+func TestAttachForwardsRequestedSGRMouseWheel(t *testing.T) {
+	m := agent.NewManager(driver.NewPTYDriver())
+	p := openAttachPTY(t, 30, 100)
+	startShell(t, m, "mouse-wheel", "stty raw -echo; printf '\\033[?1000h\\033[?1006hWHEEL_READY'; dd bs=1 count=10 2>/dev/null | od -An -tx1; sleep 30")
+	p.start(t, m, "mouse-wheel")
+	p.waitFor(t, "WHEEL_READY", 3*time.Second)
+	p.write(t, []byte("\x1b[<64;4;5M"))
+	p.waitFor(t, "1b 5b 3c 36 34 3b 34 3b 35 4d", 3*time.Second)
 	p.detach(t)
 }
 

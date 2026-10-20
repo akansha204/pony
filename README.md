@@ -223,6 +223,12 @@ Both read views are snapshots: if `agent_state=working`, read again after it
 becomes `idle` or `done` to see the later output.
 `attach` gives you direct keyboard control of the agent's terminal. Press
 Ctrl+\\ to detach and return to Pony.
+On attach, Pony sizes the agent PTY to the local terminal before drawing its
+current screen. It restores color, cursor, scroll-region, alternate-screen,
+mouse, focus, and paste state from its bounded screen model. A terminal side
+larger than 500 cells is rejected because the model cannot represent it.
+Complex multi-codepoint glyphs may still be approximated in the first replayed
+frame; subsequent agent output is streamed directly.
 
 Pony restores each attached session's mouse, focus, and paste settings and
 clears them when returning to its prompt. Mouse reports are forwarded only to

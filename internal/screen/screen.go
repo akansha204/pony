@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -18,8 +20,12 @@ const (
 	maxScrollback     = 4096
 )
 
+// MaxDimension is the largest terminal side the bounded screen model stores.
+const MaxDimension = maxDimension
+
 type buffer struct {
 	grid        [][]rune
+	styles      [][]string
 	row, col    int
 	savedRow    int
 	savedCol    int
@@ -35,6 +41,7 @@ type Snapshot struct {
 	CursorRow       int
 	CursorColumn    int
 	Visible         []string
+	StyledVisible   []string
 	Scrollback      []string
 	Text            string
 	DroppedBytes    uint64
@@ -43,6 +50,11 @@ type Snapshot struct {
 	AlternateScreen bool
 	MouseModes      []int
 	FocusReporting  bool
+	CursorVisible   bool
+	ScrollTop       int
+	ScrollBottom    int
+	OriginMode      bool
+	CurrentStyle    string
 }
 
 // Model parses a useful subset of terminal control sequences into a bounded grid.
@@ -57,6 +69,11 @@ type Model struct {
 	bracketedPaste bool
 	mouseModes     map[int]bool
 	focusReporting bool
+	cursorVisible  bool
+	scrollTop      int
+	scrollBottom   int
+	originMode     bool
+	currentStyle   string
 	state          byte
 	sequence       []byte
 	oscEsc         bool
@@ -87,14 +104,15 @@ func New(rows, columns, scrollback int) *Model {
 	return &Model{
 		rows: rows, cols: columns, maxScrollback: scrollback,
 		main: newBuffer(rows, columns), alt: newBuffer(rows, columns),
-		mouseModes: make(map[int]bool),
+		mouseModes: make(map[int]bool), cursorVisible: true, scrollBottom: rows - 1,
 	}
 }
 
 func newBuffer(rows, columns int) buffer {
-	b := buffer{grid: make([][]rune, rows)}
+	b := buffer{grid: make([][]rune, rows), styles: make([][]string, rows)}
 	for i := range b.grid {
 		b.grid[i] = blankLine(columns)
+		b.styles[i] = make([]string, columns)
 	}
 	return b
 }
@@ -247,12 +265,18 @@ func (m *Model) Resize(rows, columns int) {
 	m.main = resizeBuffer(m.main, rows, columns)
 	m.alt = resizeBuffer(m.alt, rows, columns)
 	m.rows, m.cols = rows, columns
+	m.scrollTop = min(m.scrollTop, rows-1)
+	m.scrollBottom = min(m.scrollBottom, rows-1)
+	if m.scrollBottom <= m.scrollTop {
+		m.scrollTop, m.scrollBottom = 0, rows-1
+	}
 }
 
 func resizeBuffer(old buffer, rows, columns int) buffer {
 	b := newBuffer(rows, columns)
 	for y := 0; y < min(rows, len(old.grid)); y++ {
 		copy(b.grid[y], old.grid[y])
+		copy(b.styles[y], old.styles[y])
 	}
 	b.row = min(old.row, rows-1)
 	b.col = min(old.col, columns-1)
@@ -271,8 +295,10 @@ func (m *Model) Snapshot() Snapshot {
 	b := m.active()
 	dropped := m.dropped.Load()
 	visible := make([]string, len(b.grid))
+	styled := make([]string, len(b.grid))
 	for i, line := range b.grid {
-		visible[i] = strings.TrimRight(string(line), " ")
+		visible[i] = plainLine(line)
+		styled[i] = styledLine(line, b.styles[i])
 	}
 	back := append([]string(nil), b.lines...)
 	mouseModes := make([]int, 0, len(m.mouseModes))
@@ -284,10 +310,42 @@ func (m *Model) Snapshot() Snapshot {
 	sort.Ints(mouseModes)
 	return Snapshot{
 		Rows: m.rows, Columns: m.cols, CursorRow: b.row, CursorColumn: b.col,
-		Visible: visible, Scrollback: back, Text: strings.Join(visible, "\n"),
+		Visible: visible, StyledVisible: styled, Scrollback: back, Text: strings.Join(visible, "\n"),
 		DroppedBytes: dropped, Reliable: dropped == 0, BracketedPaste: m.bracketedPaste,
 		AlternateScreen: m.useAlt, MouseModes: mouseModes, FocusReporting: m.focusReporting,
+		CursorVisible: m.cursorVisible, ScrollTop: m.scrollTop, ScrollBottom: m.scrollBottom,
+		OriginMode: m.originMode, CurrentStyle: m.currentStyle,
 	}
+}
+
+func plainLine(line []rune) string {
+	var b strings.Builder
+	for _, r := range line {
+		if r != 0 {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimRight(b.String(), " ")
+}
+
+func styledLine(line []rune, styles []string) string {
+	var b strings.Builder
+	current := ""
+	for i, r := range line {
+		if r == 0 {
+			continue
+		}
+		if styles[i] != current {
+			b.WriteString("\x1b[0m")
+			b.WriteString(styles[i])
+			current = styles[i]
+		}
+		b.WriteRune(r)
+	}
+	if current != "" {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
 }
 
 // InputModes reports whether the agent currently requests mouse tracking and
@@ -306,31 +364,49 @@ func (m *Model) InputModes() (mouse, focus bool) {
 
 func (m *Model) putRune(r rune) {
 	b := m.active()
+	width := runewidth.RuneWidth(r)
+	if width < 1 {
+		width = 1
+	}
+	if width > m.cols {
+		width = 1
+	}
+	if width == 2 && b.col == m.cols-1 {
+		b.wrapPending = true
+	}
 	if b.wrapPending {
 		b.col = 0
 		m.lineFeed()
 	}
 	b = m.active()
 	b.grid[b.row][b.col] = r
-	if b.col == m.cols-1 {
+	b.styles[b.row][b.col] = m.currentStyle
+	if width == 2 {
+		b.grid[b.row][b.col+1] = 0
+		b.styles[b.row][b.col+1] = m.currentStyle
+	}
+	if b.col+width >= m.cols {
 		b.wrapPending = true
 	} else {
-		b.col++
+		b.col += width
 	}
 }
 
 func (m *Model) lineFeed() {
 	b := m.active()
 	b.wrapPending = false
-	if b.row < m.rows-1 {
+	if b.row < m.scrollBottom || b.row > m.scrollBottom {
 		b.row++
+		b.row = min(b.row, m.rows-1)
 		return
 	}
-	removed := b.grid[0]
-	copy(b.grid, b.grid[1:])
-	b.grid[m.rows-1] = blankLine(m.cols)
+	removed := b.grid[m.scrollTop]
+	copy(b.grid[m.scrollTop:m.scrollBottom], b.grid[m.scrollTop+1:m.scrollBottom+1])
+	copy(b.styles[m.scrollTop:m.scrollBottom], b.styles[m.scrollTop+1:m.scrollBottom+1])
+	b.grid[m.scrollBottom] = blankLine(m.cols)
+	b.styles[m.scrollBottom] = make([]string, m.cols)
 	if m.maxScrollback > 0 {
-		b.lines = append(b.lines, strings.TrimRight(string(removed), " "))
+		b.lines = append(b.lines, plainLine(removed))
 		if extra := len(b.lines) - m.maxScrollback; extra > 0 {
 			copy(b.lines, b.lines[extra:])
 			b.lines = b.lines[:m.maxScrollback]
@@ -380,7 +456,12 @@ func (m *Model) handleCSI(final byte, raw []byte) {
 		b.row = min(m.rows-1, value(0, 1)-1)
 		b.wrapPending = false
 	case 'H', 'f':
-		b.row = min(m.rows-1, value(0, 1)-1)
+		row := value(0, 1) - 1
+		if m.originMode {
+			row += m.scrollTop
+			row = min(row, m.scrollBottom)
+		}
+		b.row = min(m.rows-1, row)
 		b.col = min(m.cols-1, value(1, 1)-1)
 		b.wrapPending = false
 	case 'J':
@@ -404,6 +485,23 @@ func (m *Model) handleCSI(final byte, raw []byte) {
 		for i := 0; i < value(0, 1); i++ {
 			m.scrollDown(b)
 		}
+	case 'm':
+		if len(raw) == 0 || (len(params) > 0 && params[0] == 0) {
+			m.currentStyle = ""
+		}
+		if len(raw) > 0 && string(raw) != "0" && len(m.currentStyle)+len(raw) < 256 {
+			m.currentStyle += "\x1b[" + string(raw) + "m"
+		}
+	case 'r':
+		top, bottom := value(0, 1)-1, value(1, m.rows)-1
+		if top >= 0 && bottom < m.rows && top < bottom {
+			m.scrollTop, m.scrollBottom = top, bottom
+			b.row, b.col = 0, 0
+			if m.originMode {
+				b.row = top
+			}
+			b.wrapPending = false
+		}
 	case 'h', 'l':
 		if private {
 			for _, mode := range params {
@@ -415,6 +513,17 @@ func (m *Model) handleCSI(final byte, raw []byte) {
 				}
 				if mode == 1004 {
 					m.focusReporting = final == 'h'
+				}
+				if mode == 25 {
+					m.cursorVisible = final == 'h'
+				}
+				if mode == 6 {
+					m.originMode = final == 'h'
+					b.row, b.col = 0, 0
+					if m.originMode {
+						b.row = m.scrollTop
+					}
+					b.wrapPending = false
 				}
 				if mode == 1049 || mode == 47 || mode == 1047 {
 					if final == 'h' {
@@ -460,6 +569,7 @@ func (m *Model) eraseLine(b *buffer, mode int) {
 		return
 	}
 	fillBlank(b.grid[b.row][start:end])
+	fillStyle(b.styles[b.row][start:end], m.currentStyle)
 }
 
 func (m *Model) eraseDisplay(b *buffer, mode int) {
@@ -468,15 +578,18 @@ func (m *Model) eraseDisplay(b *buffer, mode int) {
 		m.eraseLine(b, 0)
 		for y := b.row + 1; y < m.rows; y++ {
 			fillBlank(b.grid[y])
+			fillStyle(b.styles[y], m.currentStyle)
 		}
 	case 1:
 		for y := 0; y < b.row; y++ {
 			fillBlank(b.grid[y])
+			fillStyle(b.styles[y], m.currentStyle)
 		}
 		m.eraseLine(b, 1)
 	case 2:
 		for y := range b.grid {
 			fillBlank(b.grid[y])
+			fillStyle(b.styles[y], m.currentStyle)
 		}
 	case 3:
 		for y := range b.lines {
@@ -492,12 +605,20 @@ func fillBlank(line []rune) {
 	}
 }
 
+func fillStyle(line []string, style string) {
+	for i := range line {
+		line[i] = style
+	}
+}
+
 func (m *Model) scrollUp(b *buffer) {
-	removed := b.grid[0]
-	copy(b.grid, b.grid[1:])
-	b.grid[m.rows-1] = blankLine(m.cols)
+	removed := b.grid[m.scrollTop]
+	copy(b.grid[m.scrollTop:m.scrollBottom], b.grid[m.scrollTop+1:m.scrollBottom+1])
+	copy(b.styles[m.scrollTop:m.scrollBottom], b.styles[m.scrollTop+1:m.scrollBottom+1])
+	b.grid[m.scrollBottom] = blankLine(m.cols)
+	b.styles[m.scrollBottom] = make([]string, m.cols)
 	if m.maxScrollback > 0 {
-		b.lines = append(b.lines, strings.TrimRight(string(removed), " "))
+		b.lines = append(b.lines, plainLine(removed))
 		if extra := len(b.lines) - m.maxScrollback; extra > 0 {
 			copy(b.lines, b.lines[extra:])
 			b.lines = b.lines[:m.maxScrollback]
@@ -506,8 +627,10 @@ func (m *Model) scrollUp(b *buffer) {
 }
 
 func (m *Model) scrollDown(b *buffer) {
-	copy(b.grid[1:], b.grid[:m.rows-1])
-	b.grid[0] = blankLine(m.cols)
+	copy(b.grid[m.scrollTop+1:m.scrollBottom+1], b.grid[m.scrollTop:m.scrollBottom])
+	copy(b.styles[m.scrollTop+1:m.scrollBottom+1], b.styles[m.scrollTop:m.scrollBottom])
+	b.grid[m.scrollTop] = blankLine(m.cols)
+	b.styles[m.scrollTop] = make([]string, m.cols)
 }
 
 func (m *Model) enterAlt() {
@@ -532,6 +655,10 @@ func (m *Model) resetLocked() {
 	m.bracketedPaste = false
 	m.mouseModes = make(map[int]bool)
 	m.focusReporting = false
+	m.cursorVisible = true
+	m.scrollTop, m.scrollBottom = 0, m.rows-1
+	m.originMode = false
+	m.currentStyle = ""
 	m.state = 0
 	m.sequence = nil
 	m.pending = nil

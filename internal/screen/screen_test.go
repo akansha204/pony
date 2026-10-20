@@ -19,6 +19,21 @@ func TestFeedBuildsVisibleScreenAcrossChunks(t *testing.T) {
 	}
 }
 
+func TestSnapshotKeepsStyleWideCellsAndControlState(t *testing.T) {
+	m := New(5, 12, 0)
+	m.Feed([]byte("\x1b[31m赤A\x1b[0m\x1b[3;5r\x1b[?6h\x1b[?25l\x1b[2;1H\x1b[1mB"))
+	s := m.Snapshot()
+	if s.Visible[0] != "赤A" || !strings.Contains(s.StyledVisible[0], "\x1b[31m赤A") {
+		t.Fatalf("styled wide text = %q / %q", s.Visible[0], s.StyledVisible[0])
+	}
+	if s.ScrollTop != 2 || s.ScrollBottom != 4 || !s.OriginMode || s.CursorVisible || s.CursorRow != 3 || s.CursorColumn != 1 || s.CurrentStyle != "\x1b[1m" {
+		t.Fatalf("control state = %+v", s)
+	}
+	if s.Visible[3] != "B" {
+		t.Fatalf("origin-relative cursor row = %#v", s.Visible)
+	}
+}
+
 func TestAlternateScreenDoesNotReplaceMainScreen(t *testing.T) {
 	m := New(2, 12, 4)
 	m.Feed([]byte("main screen\r\n"))
